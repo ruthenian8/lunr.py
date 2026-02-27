@@ -244,12 +244,10 @@ class Builder:
         # the constituent field and doc_ref. A fieldRef takes the form
         # 'docRef/fieldName'.
         for field_ref, vector in self.field_vectors.items():
-            try:
-                doc_ref, field_name = field_ref.split("/")
-            except ValueError:
-                # Malformed field_ref; skip it.
-                continue
-            writer.upsert_field_vector(field_ref, field_name, doc_ref, vector)
+            parsed_ref = FieldRef.from_string(field_ref)
+            writer.upsert_field_vector(
+                field_ref, parsed_ref.field_name, parsed_ref.doc_ref, vector
+            )
         # Commit writes to the database.
         writer.commit()
         # Create reader and proxies for the Index. No token_set is provided.

@@ -94,3 +94,28 @@ Lunr provides a convenience `lunr` function to quickly index this set of documen
 
 Please refer to the [documentation](http://lunr.readthedocs.io/en/latest/)
 for more usage examples.
+
+## SQL storage backend (optional)
+
+`lunr.py` now includes an optional SQL-backed storage mode through `SqlStorage`.
+This keeps the public indexing/search API the same while persisting terms,
+postings, and vectors in SQL.
+
+```python
+from lunr import lunr
+from lunr.storage.sql import SqlStorage
+
+storage = SqlStorage.from_url("sqlite:///:memory:", index_name="docs")
+idx = lunr(ref="id", fields=("title", "body"), documents=documents, storage=storage)
+```
+
+SQL mode supports exact term search and wildcard (`*`) expansion via SQL `LIKE`.
+The following features are intentionally not supported in SQL mode and will raise
+an exception:
+
+- prohibited clauses (e.g. `-term`)
+- fully negated queries
+- fuzzy / edit-distance expansion
+
+For SQL-backed indexes, `Index.serialize()` is disabled. Use the database as the
+persistent representation.
