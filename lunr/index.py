@@ -26,12 +26,35 @@ class Index:
     serialized indexes.
     """
 
-    def __init__(self, inverted_index, field_vectors, token_set, fields, pipeline):
+    def __init__(self, inverted_index, field_vectors, token_set, fields, pipeline, storage_reader=None):
+        """Initialise an Index.
+
+        Parameters
+        ----------
+        inverted_index : Mapping or dict
+            Either a standard in‑memory inverted index (dict) or a proxy that
+            exposes ``__getitem__`` for term lookups.
+        field_vectors : Mapping or dict
+            Either a dict or proxy mapping field_ref strings to Vector
+            instances.
+        token_set : TokenSet or None
+            A TokenSet containing all terms in the index for wildcard/fuzzy
+            expansion. If ``None``, SQL expansion will be used.
+        fields : list
+            List of field names indexed.
+        pipeline : Pipeline
+            Search pipeline to process query terms.
+        storage_reader : SqlIndexReader, optional
+            When provided, indicates that this index is backed by SQL and
+            provides methods for term expansion, postings retrieval and
+            vector reconstruction.
+        """
         self.inverted_index = inverted_index
         self.field_vectors = field_vectors
         self.token_set = token_set
         self.fields = fields
         self.pipeline = pipeline
+        self.storage_reader = storage_reader
 
     def __eq__(self, other):
         # TODO: extend equality to other attributes
@@ -123,6 +146,19 @@ class Index:
         required_matches = {}
         prohibited_matches = defaultdict(set)
 
+        # In SQL mode we do not support prohibited or negated queries. Check
+        # once outside the loop to fail fast with a helpful error.
+        if self.storage_reader is not None:
+            for clause in query.clauses:
+                if clause.presence == QueryPresence.PROHIBITED:
+                    raise BaseLunrException(
+                        "Prohibited clauses are not supported for SQL‑backed indexes"
+                    )
+            if query.is_negated():
+                raise BaseLunrException(
+                    "Negated queries are not supported for SQL‑backed indexes"
+                )
+
         for clause in query.clauses:
             # Unless the pipeline has been disabled for this term, which is
             # the case for terms with wildcards, we need to pass the clause
@@ -144,16 +180,24 @@ class Index:
                 # but mutate its term property.
                 clause.term = term
 
-                # From the term in the clause we create a token set which will
-                # then be used to intersect the indexes token set to get a list
-                # of terms to lookup in the inverted index
-                term_token_set = TokenSet.from_clause(clause)
-                expanded_terms = self.token_set.intersect(term_token_set).to_list()
+                # Expand the term according to the storage backend or TokenSet.
+                if self.storage_reader is not None:
+                    # Fuzzy searches are not supported in SQL mode.
+                    if clause.edit_distance and clause.edit_distance > 0:
+                        raise BaseLunrException(
+                            "Edit distance (fuzzy) searches are not supported for SQL‑backed indexes"
+                        )
+                    # Expand via SQL LIKE if wildcards are present, otherwise exact.
+                    expanded_terms = self.storage_reader.expand_terms(clause.term)
+                else:
+                    # Use in-memory TokenSet expansion.
+                    term_token_set = TokenSet.from_clause(clause)
+                    expanded_terms = self.token_set.intersect(term_token_set).to_list()
 
-                # If a term marked as required does not exist in the TokenSet
-                # it is impossible for the search to return any matches.
-                # We set all the field-scoped required matches set to empty
-                # and stop examining further clauses
+                # If a term marked as required does not exist in the TokenSet or SQL
+                # expansion, it is impossible for the search to return any matches.
+                # We set all the field-scoped required matches set to empty and
+                # stop examining further clauses.
                 if (
                     len(expanded_terms) == 0
                     and clause.presence == QueryPresence.REQUIRED
@@ -174,7 +218,8 @@ class Index:
                         #
                         # The posting is the entry in the invertedIndex for the
                         # matching term from above.
-                        field_posting = posting[field]
+                        # postings may omit fields with no occurrences (e.g. SQL backend)
+                        field_posting = posting.get(field, {})
                         matching_document_refs = field_posting.keys()
                         term_field = expanded_term + "/" + field
                         matching_documents_set = set(matching_document_refs)

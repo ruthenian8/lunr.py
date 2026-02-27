@@ -48,6 +48,10 @@ class Builder:
         self._k1 = 1.2
         self.term_index = 0
         self.metadata_whitelist = []
+        # Optional storage backend. If set by calling .storage(), the builder
+        # will persist the index into the backend on build() and return an
+        # Index configured to read from it.
+        self._storage_backend = None
 
     def ref(self, ref):
         """Sets the document field used as the document reference.
@@ -175,22 +179,91 @@ class Builder:
                         metadata_key
                     ].append(metadata)
 
+    # -------------------------------------------------------------------
+    # Storage configuration
+    # -------------------------------------------------------------------
+    def storage(self, storage_backend):
+        """Configure a storage backend for persisting the index.
+
+        If called before ``build()`` this will cause the builder to
+        write the constructed index into the provided backend and return
+        an Index that queries from it. The storage backend must conform
+        to the ``SqlStorage`` interface, exposing ``writer()`` and
+        ``reader()`` methods returning objects with the appropriate methods.
+
+        Parameters
+        ----------
+        storage_backend : object
+            A storage backend instance created from ``lunr.storage.sql.SqlStorage``.
+        """
+        self._storage_backend = storage_backend
+        return self
+
     def build(self):
         """Builds the index, creating an instance of `lunr.Index`.
 
         This completes the indexing process and should only be called once all
         documents have been added to the index.
         """
+        # Calculate average field lengths and construct field vectors in all
+        # modes. These operations populate self.field_vectors and
+        # self.field_lengths used by the scoring algorithm.
         self._calculate_average_field_lengths()
         self._create_field_vectors()
-        self._create_token_set()
+        # Determine whether we are operating with a storage backend. If not,
+        # build and return an in‑memory index as before.
+        if self._storage_backend is None:
+            # Create a token set from all terms for wildcard/fuzzy expansion.
+            self._create_token_set()
+            return Index(
+                inverted_index=self.inverted_index,
+                field_vectors=self.field_vectors,
+                token_set=self.token_set,
+                fields=list(self._fields.keys()),
+                pipeline=self.search_pipeline,
+            )
 
+        # With a storage backend configured, persist the index to the
+        # backend and return an Index configured to use the SQL reader. We
+        # explicitly do *not* build a TokenSet because term expansion will be
+        # performed by the database via LIKE.
+        writer = self._storage_backend.writer()
+        # Persist terms and postings. The inverted_index has structure:
+        # { term : { field_name : { doc_ref : metadata_dict }, '_index': idx } }
+        for term, posting in self.inverted_index.items():
+            term_index = posting["_index"]
+            # Write term index
+            writer.upsert_term(term, term_index)
+            for field_name in self._fields:
+                field_postings = posting.get(field_name, {})
+                for doc_ref, metadata in field_postings.items():
+                    # metadata is defaultdict(list) -> convert to normal dict
+                    md = {k: list(v) for k, v in metadata.items()}
+                    writer.upsert_posting(term, field_name, doc_ref, md)
+        # Persist field vectors. Keys are fieldRef strings; we need to know
+        # the constituent field and doc_ref. A fieldRef takes the form
+        # 'docRef/fieldName'.
+        for field_ref, vector in self.field_vectors.items():
+            try:
+                doc_ref, field_name = field_ref.split("/")
+            except ValueError:
+                # Malformed field_ref; skip it.
+                continue
+            writer.upsert_field_vector(field_ref, field_name, doc_ref, vector)
+        # Commit writes to the database.
+        writer.commit()
+        # Create reader and proxies for the Index. No token_set is provided.
+        reader = self._storage_backend.reader()
+        from lunr.storage.sql import SqlInvertedIndexProxy, SqlFieldVectorsProxy
+        inverted_index_proxy = SqlInvertedIndexProxy(reader)
+        field_vectors_proxy = SqlFieldVectorsProxy(reader)
         return Index(
-            inverted_index=self.inverted_index,
-            field_vectors=self.field_vectors,
-            token_set=self.token_set,
+            inverted_index=inverted_index_proxy,
+            field_vectors=field_vectors_proxy,
+            token_set=None,
             fields=list(self._fields.keys()),
             pipeline=self.search_pipeline,
+            storage_reader=reader,
         )
 
     def _create_token_set(self):
