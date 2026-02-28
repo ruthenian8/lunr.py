@@ -149,15 +149,15 @@ class Index:
         # In SQL mode we do not support prohibited or negated queries. Check
         # once outside the loop to fail fast with a helpful error.
         if self.storage_reader is not None:
+            if query.is_negated():
+                raise BaseLunrException(
+                    "Negated queries are not supported for SQL-backed indexes"
+                )
             for clause in query.clauses:
                 if clause.presence == QueryPresence.PROHIBITED:
                     raise BaseLunrException(
-                        "Prohibited clauses are not supported for SQL‑backed indexes"
+                        "Prohibited clauses are not supported for SQL-backed indexes"
                     )
-            if query.is_negated():
-                raise BaseLunrException(
-                    "Negated queries are not supported for SQL‑backed indexes"
-                )
 
         for clause in query.clauses:
             # Unless the pipeline has been disabled for this term, which is
@@ -185,7 +185,7 @@ class Index:
                     # Fuzzy searches are not supported in SQL mode.
                     if clause.edit_distance and clause.edit_distance > 0:
                         raise BaseLunrException(
-                            "Edit distance (fuzzy) searches are not supported for SQL‑backed indexes"
+                            "Edit distance (fuzzy) searches are not supported for SQL-backed indexes"
                         )
                     # Expand via SQL LIKE if wildcards are present, otherwise exact.
                     expanded_terms = self.storage_reader.expand_terms(clause.term)
@@ -359,6 +359,11 @@ class Index:
 
     def serialize(self):
         """Returns a serialized index as a dict following lunr-schema."""
+        if self.storage_reader is not None:
+            raise BaseLunrException(
+                "SQL-backed indexes cannot be serialized; use the SQL database as persistence."
+            )
+
         from lunr import __TARGET_JS_VERSION__
 
         inverted_index = [
