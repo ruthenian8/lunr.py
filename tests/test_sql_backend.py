@@ -62,8 +62,11 @@ def _connect_mysql(host, user, password, database, port):
 
 @pytest.fixture
 def mysql_storage():
-    user_and_db = "test"
-    password = "123456"
+    user_and_db = os.getenv("MAINDB")
+    password = os.getenv("PASSWDDB")
+
+    if not user_and_db or password is None:
+        pytest.skip("MySQL tests require MAINDB and PASSWDDB to be set")
 
     host = os.getenv("MYSQL_HOST", "127.0.0.1")
     port = int(os.getenv("MYSQL_PORT", "3306"))
@@ -77,7 +80,7 @@ def mysql_storage():
     try:
         conn = _connect_mysql(host, user, password, database, port)
     except ModuleNotFoundError as exc:
-        pytest.fail(str(exc))
+        pytest.skip(str(exc))
     except Exception as exc:
         pytest.skip(f"Unable to connect to MySQL with local credentials: {exc}")
 

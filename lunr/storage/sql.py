@@ -127,7 +127,14 @@ class SqlStorage:
             )
             """
         )
-        c.execute("CREATE INDEX IF NOT EXISTS idx_lunr_postings_term_field ON lunr_postings (index_name, term, field)")
+        if self.dialect.name == "mysql":
+            try:
+                c.execute("CREATE INDEX idx_lunr_postings_term_field ON lunr_postings (index_name, term, field)")
+            except Exception as exc:
+                if "Duplicate key name" not in str(exc):
+                    raise
+        else:
+            c.execute("CREATE INDEX IF NOT EXISTS idx_lunr_postings_term_field ON lunr_postings (index_name, term, field)")
         self.conn.commit()
 
     def writer(self) -> "SqlIndexWriter":
