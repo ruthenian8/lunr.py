@@ -154,7 +154,36 @@ class SqlStorage:
             """
         )
         c.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS lunr_doc_fields (
+                index_name {key_text} NOT NULL,
+                field_ref {key_text} NOT NULL,
+                field {key_text} NOT NULL,
+                doc_ref {key_text} NOT NULL,
+                length INTEGER NOT NULL,
+                PRIMARY KEY (index_name, field_ref)
+            )
+            """
+        )
+        c.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS lunr_term_frequencies (
+                index_name {key_text} NOT NULL,
+                field_ref {key_text} NOT NULL,
+                term {key_text} NOT NULL,
+                tf INTEGER NOT NULL,
+                PRIMARY KEY (index_name, field_ref, term)
+            )
+            """
+        )
+        c.execute(
             "CREATE INDEX IF NOT EXISTS idx_lunr_postings_term_field ON lunr_postings (index_name, term, field)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lunr_doc_fields_field ON lunr_doc_fields (index_name, field)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lunr_tf_field_ref ON lunr_term_frequencies (index_name, field_ref)"
         )
         self.conn.commit()
 
@@ -379,6 +408,83 @@ class SqlIndexWriter:
     def commit(self) -> None:
         self.conn.commit()
 
+    def upsert_doc_fields_bulk(self, rows: List[Tuple[str, str, str, int]]) -> None:
+        if not rows:
+            return
+
+        c = self.conn.cursor()
+        placeholders = ", ".join([self.storage.dialect.placeholder] * 5)
+        values = [
+            (self.index_name, field_ref, field, doc_ref, length)
+            for field_ref, field, doc_ref, length in rows
+        ]
+
+        if self.storage.dialect.upsert == "replace":
+            c.executemany(
+                "INSERT OR REPLACE INTO lunr_doc_fields "
+                f"(index_name, field_ref, field, doc_ref, length) VALUES ({placeholders})",
+                values,
+            )
+            return
+
+        if self.storage.dialect.upsert == "conflict":
+            c.executemany(
+                "INSERT INTO lunr_doc_fields "
+                "(index_name, field_ref, field, doc_ref, length) "
+                f"VALUES ({placeholders}) "
+                "ON CONFLICT (index_name, field_ref) DO UPDATE "
+                "SET field=EXCLUDED.field, doc_ref=EXCLUDED.doc_ref, "
+                "length=EXCLUDED.length",
+                values,
+            )
+            return
+
+        c.executemany(
+            "INSERT INTO lunr_doc_fields "
+            "(index_name, field_ref, field, doc_ref, length) "
+            f"VALUES ({placeholders}) "
+            "ON DUPLICATE KEY UPDATE field=VALUES(field), doc_ref=VALUES(doc_ref), "
+            "length=VALUES(length)",
+            values,
+        )
+
+    def upsert_term_frequencies_bulk(self, rows: List[Tuple[str, str, int]]) -> None:
+        if not rows:
+            return
+
+        c = self.conn.cursor()
+        placeholders = ", ".join([self.storage.dialect.placeholder] * 4)
+        values = [
+            (self.index_name, field_ref, term, tf) for field_ref, term, tf in rows
+        ]
+
+        if self.storage.dialect.upsert == "replace":
+            c.executemany(
+                "INSERT OR REPLACE INTO lunr_term_frequencies "
+                f"(index_name, field_ref, term, tf) VALUES ({placeholders})",
+                values,
+            )
+            return
+
+        if self.storage.dialect.upsert == "conflict":
+            c.executemany(
+                "INSERT INTO lunr_term_frequencies "
+                "(index_name, field_ref, term, tf) "
+                f"VALUES ({placeholders}) "
+                "ON CONFLICT (index_name, field_ref, term) DO UPDATE "
+                "SET tf=EXCLUDED.tf",
+                values,
+            )
+            return
+
+        c.executemany(
+            "INSERT INTO lunr_term_frequencies "
+            "(index_name, field_ref, term, tf) "
+            f"VALUES ({placeholders}) "
+            "ON DUPLICATE KEY UPDATE tf=VALUES(tf)",
+            values,
+        )
+
 
 class SqlIndexReader:
     def __init__(self, storage: SqlStorage) -> None:
@@ -452,6 +558,27 @@ class SqlIndexReader:
         )
         for (field_ref,) in c.fetchall():
             yield field_ref
+
+    def iter_doc_fields(self) -> Iterator[Tuple[str, str, str, int]]:
+        c = self.conn.cursor()
+        c.execute(
+            f"SELECT field_ref, field, doc_ref, length FROM lunr_doc_fields "
+            f"WHERE index_name = {self.storage.dialect.placeholder}",
+            (self.index_name,),
+        )
+        for row in c.fetchall():
+            yield row
+
+    def iter_term_frequencies(self) -> Iterator[Tuple[str, str, int]]:
+        c = self.conn.cursor()
+        c.execute(
+            f"SELECT field_ref, term, tf FROM lunr_term_frequencies "
+            f"WHERE index_name = {self.storage.dialect.placeholder} "
+            "ORDER BY field_ref",
+            (self.index_name,),
+        )
+        for row in c.fetchall():
+            yield row
 
 
 class SqlInvertedIndexProxy(Mapping):

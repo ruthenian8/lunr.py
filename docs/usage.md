@@ -178,3 +178,26 @@ As opposed to the default:
 ```
 
 Note presence can also be combined with any of the other modifiers described above.
+
+## SQL indexing knobs
+
+The top-level `lunr(...)` API exposes SQL parallel configuration:
+
+```python
+idx = lunr(
+    ref="id",
+    fields=("title", "body"),
+    documents=documents,
+    storage=sql_storage,
+    workers=4,
+    parallel_backend="process",
+)
+```
+
+For larger corpora, use a builder directly to enable incremental SQL flushing
+and commit cadence tuning:
+
+```python
+builder.sql_flush(enabled=True, doc_batch_size=500, row_batch_size=5000)
+builder.sql_commit_every(docs=2000, rows=50000)
+```

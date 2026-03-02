@@ -1,3 +1,5 @@
+import warnings
+
 from lunr import languages as lang
 from lunr.builder import Builder
 from lunr.stemmer import stemmer
@@ -44,6 +46,19 @@ def lunr(
     if storage is not None:
         builder.storage(storage)
     if workers is not None:
+        try:
+            if (
+                int(workers) > 1
+                and storage is not None
+                and parallel_backend == "process"
+                and len(documents) < 200
+            ):
+                warnings.warn(
+                    "workers>1 on small corpora may be slower due to parallel overhead.",
+                    RuntimeWarning,
+                )
+        except TypeError:
+            pass
         builder.parallel(workers=workers, backend=parallel_backend)
     builder.ref(ref)
     for field in fields:

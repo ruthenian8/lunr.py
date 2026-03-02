@@ -306,20 +306,57 @@ def test_sql_backend_process_backend_falls_back_when_payload_is_unpicklable():
     docs = [{"id": "1", "title": "hello", "body": "hello world"}]
     storage = _sqlite_storage("fallback")
 
-    idx = lunr(
-        ref="id",
-        fields=[
-            "id",
-            {"field_name": "title", "extractor": lambda doc: doc["title"]},
-            "body",
-        ],
-        documents=docs,
-        storage=storage,
-        workers=2,
-        parallel_backend="process",
-    )
+    with pytest.warns(RuntimeWarning, match="falling back to 'thread'"):
+        idx = lunr(
+            ref="id",
+            fields=[
+                "id",
+                {"field_name": "title", "extractor": lambda doc: doc["title"]},
+                "body",
+            ],
+            documents=docs,
+            storage=storage,
+            workers=2,
+            parallel_backend="process",
+        )
 
     assert _refs(idx, "hello") == ["1"]
+
+
+def test_sql_backend_incremental_flush_matches_standard(documents):
+    standard_idx = _build_sql_index(documents, _sqlite_storage("standard"))
+
+    builder = get_default_builder()
+    builder.ref("id")
+    builder.field("title")
+    builder.field("body")
+    builder.storage(_sqlite_storage("incremental"))
+    builder.sql_flush(enabled=True, doc_batch_size=1, row_batch_size=2)
+    for document in documents:
+        builder.add(document)
+
+    incremental_idx = builder.build()
+
+    assert _refs(incremental_idx, "green study") == _refs(standard_idx, "green study")
+
+
+def test_sql_backend_parallel_incremental_flush_matches_standard(documents):
+    standard_idx = _build_sql_index(documents, _sqlite_storage("standard-parallel"))
+
+    builder = get_default_builder()
+    builder.ref("id")
+    builder.field("title")
+    builder.field("body")
+    builder.storage(_sqlite_storage("incremental-parallel"))
+    builder.parallel(workers=2, backend="thread")
+    builder.sql_flush(enabled=True, doc_batch_size=1, row_batch_size=2)
+    builder.sql_commit_every(docs=1, rows=2)
+    for document in documents:
+        builder.add(document)
+
+    incremental_idx = builder.build()
+
+    assert _refs(incremental_idx, "green study") == _refs(standard_idx, "green study")
 
 
 @pytest.mark.mysql
