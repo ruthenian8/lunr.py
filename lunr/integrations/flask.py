@@ -32,6 +32,7 @@ def sql_lunr_index(db: Any, index_name: str) -> Index:
     try:
         dialect = _dialect_name_from_engine(db.engine)
         storage = SqlStorage.from_conn(conn, index_name=index_name, dialect=dialect)
+        storage.ensure_schema()
         reader = storage.reader()
 
         placeholder = storage.dialect.placeholder
@@ -41,7 +42,15 @@ def sql_lunr_index(db: Any, index_name: str) -> Index:
                 f"SELECT DISTINCT field FROM lunr_postings WHERE index_name = {placeholder}",
                 (index_name,),
             )
-            fields = [row[0] for row in cursor.fetchall()]
+            rows = cursor.fetchall()
+            if not rows:
+                cursor.execute(
+                    f"SELECT DISTINCT field FROM lunr_doc_fields WHERE index_name = {placeholder}",
+                    (index_name,),
+                )
+                rows = cursor.fetchall()
+
+            fields = [row[0] for row in rows]
         finally:
             cursor.close()
 

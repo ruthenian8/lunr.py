@@ -10,6 +10,7 @@ from lunr.integrations.flask import (
     create_app,
     sql_lunr_index,
 )
+from lunr.storage.sql import SqlStorage
 
 
 class _TrackingConnection:
@@ -103,6 +104,32 @@ def test_sql_lunr_index_returns_empty_results_for_blank_query(documents, tmp_pat
 
     with sql_lunr_index(db, "site_search") as idx:
         assert idx.search("") == []
+
+
+def test_sql_lunr_index_handles_fresh_database_without_existing_tables(tmp_path):
+    db = _DB(tmp_path / "fresh.db")
+
+    with sql_lunr_index(db, "site_search") as idx:
+        assert idx.search("anything") == []
+
+
+def test_sql_lunr_index_discovers_fields_from_doc_fields_when_no_postings(tmp_path):
+    db = _DB(tmp_path / "site.db")
+
+    conn = db.engine.raw_connection()
+    try:
+        storage = SqlStorage.from_conn(conn, index_name="site_search", dialect="sqlite")
+        storage.ensure_schema()
+        conn.execute(
+            "INSERT INTO lunr_doc_fields (index_name, field_ref, field, doc_ref, length) VALUES (?, ?, ?, ?, ?)",
+            ("site_search", "title/doc-1", "title", "doc-1", 0),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with sql_lunr_index(db, "site_search") as idx:
+        assert idx.fields == ["title"]
 
 
 def test_create_app_defers_imports_until_called(monkeypatch):
