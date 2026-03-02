@@ -187,15 +187,14 @@ class Builder:
         doc_ref = str(doc[self._ref])
         self._documents[doc_ref] = attributes or {}
         self.document_count += 1
-        if self._parallel_workers > 1 or (
-            self._storage_backend is not None and self._sql_flush_enabled
-        ):
+        defer_indexing = self._storage_backend is not None and (
+            self._parallel_workers > 1 or self._sql_flush_enabled
+        )
+        if defer_indexing:
             self._raw_documents.append((doc_ref, doc))
             self._defer_indexing = True
 
-        if self._parallel_workers > 1 or (
-            self._storage_backend is not None and self._sql_flush_enabled
-        ):
+        if defer_indexing:
             return
 
         self._index_document(doc_ref, doc)
@@ -383,14 +382,7 @@ class Builder:
             for doc_ref, doc in self._raw_documents
         ]
 
-        backend = self._parallel_backend
-        if backend == "process":
-            try:
-                for payload in worker_payloads:
-                    pickle.dumps(payload)
-            except Exception as exc:
-                backend = "thread"
-                self._warn_process_fallback(exc)
+        backend = self._resolve_parallel_backend(worker_payloads)
 
         executor_cls = (
             ProcessPoolExecutor if backend == "process" else ThreadPoolExecutor
@@ -467,6 +459,23 @@ class Builder:
             RuntimeWarning,
         )
 
+    def _resolve_parallel_backend(self, worker_payloads):
+        backend = self._parallel_backend
+        if backend != "process":
+            return backend
+
+        fields = [(name, field.extractor) for name, field in self._fields.items()]
+        shared_payload = (None, None, fields, self.pipeline, self.metadata_whitelist)
+        try:
+            pickle.dumps(shared_payload)
+            if worker_payloads:
+                pickle.dumps(worker_payloads[0])
+        except Exception as exc:
+            self._warn_process_fallback(exc)
+            return "thread"
+
+        return backend
+
     def _flush_incremental_batches(self, writer, batches):
         rows_written = 0
         if batches["terms"]:
@@ -501,6 +510,7 @@ class Builder:
         field_doc_count = defaultdict(int)
         rows_since_commit = 0
         docs_since_commit = 0
+        docs_since_flush = 0
 
         for doc_ref, doc in self._raw_documents:
             for field_name, field in self._fields.items():
@@ -648,14 +658,7 @@ class Builder:
             (doc_ref, doc, fields, self.pipeline, self.metadata_whitelist)
             for doc_ref, doc in self._raw_documents
         ]
-        backend = self._parallel_backend
-        if backend == "process":
-            try:
-                for payload in worker_payloads:
-                    pickle.dumps(payload)
-            except Exception as exc:
-                backend = "thread"
-                self._warn_process_fallback(exc)
+        backend = self._resolve_parallel_backend(worker_payloads)
 
         writer = self._storage_backend.writer()
         batches = {
@@ -668,6 +671,9 @@ class Builder:
         postings_count_by_term = defaultdict(int)
         field_length_sum = defaultdict(int)
         field_doc_count = defaultdict(int)
+        rows_since_commit = 0
+        docs_since_commit = 0
+        docs_since_flush = 0
 
         executor_cls = (
             ProcessPoolExecutor if backend == "process" else ThreadPoolExecutor
@@ -694,10 +700,27 @@ class Builder:
                             for k, v in field_data["metadata"].get(term_key, {}).items()
                         }
                         batches["postings"].append((term_key, field_name, doc_ref, md))
-                if any(len(v) >= self._sql_row_batch_size for v in batches.values()):
-                    self._flush_incremental_batches(writer, batches)
+                docs_since_flush += 1
+                if docs_since_flush >= self._sql_doc_batch_size or any(
+                    len(v) >= self._sql_row_batch_size for v in batches.values()
+                ):
+                    rows_since_commit += self._flush_incremental_batches(
+                        writer, batches
+                    )
+                    docs_since_flush = 0
+                docs_since_commit += 1
+                if (
+                    self._sql_commit_every_docs
+                    and docs_since_commit >= self._sql_commit_every_docs
+                ) or (
+                    self._sql_commit_every_rows
+                    and rows_since_commit >= self._sql_commit_every_rows
+                ):
+                    writer.commit()
+                    docs_since_commit = 0
+                    rows_since_commit = 0
 
-        self._flush_incremental_batches(writer, batches)
+        rows_since_commit += self._flush_incremental_batches(writer, batches)
         self.average_field_length = defaultdict(float)
         for field_name in self._fields:
             count = field_doc_count[field_name] or 1

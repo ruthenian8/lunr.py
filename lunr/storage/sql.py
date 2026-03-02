@@ -176,15 +176,46 @@ class SqlStorage:
             )
             """
         )
-        c.execute(
-            "CREATE INDEX IF NOT EXISTS idx_lunr_postings_term_field ON lunr_postings (index_name, term, field)"
-        )
-        c.execute(
-            "CREATE INDEX IF NOT EXISTS idx_lunr_doc_fields_field ON lunr_doc_fields (index_name, field)"
-        )
-        c.execute(
-            "CREATE INDEX IF NOT EXISTS idx_lunr_tf_field_ref ON lunr_term_frequencies (index_name, field_ref)"
-        )
+        if self.dialect.name == "mysql":
+            indexes = [
+                (
+                    "idx_lunr_postings_term_field",
+                    "lunr_postings",
+                    "(index_name, term, field)",
+                ),
+                ("idx_lunr_doc_fields_field", "lunr_doc_fields", "(index_name, field)"),
+                (
+                    "idx_lunr_tf_field_ref",
+                    "lunr_term_frequencies",
+                    "(index_name, field_ref)",
+                ),
+            ]
+            for index_name, table_name, columns in indexes:
+                c.execute(
+                    """
+                    SELECT COUNT(1)
+                    FROM information_schema.statistics
+                    WHERE table_schema = DATABASE()
+                      AND table_name = %s
+                      AND index_name = %s
+                    """,
+                    (table_name, index_name),
+                )
+                if c.fetchone()[0] == 0:
+                    c.execute(f"CREATE INDEX {index_name} ON {table_name} {columns}")
+        else:
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lunr_postings_term_field ON "
+                "lunr_postings (index_name, term, field)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lunr_doc_fields_field ON "
+                "lunr_doc_fields (index_name, field)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lunr_tf_field_ref ON "
+                "lunr_term_frequencies (index_name, field_ref)"
+            )
         self.conn.commit()
 
     def writer(self) -> "SqlIndexWriter":

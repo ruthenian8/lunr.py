@@ -45,11 +45,10 @@ def lunr(
     builder = builder or get_default_builder(languages)
     if storage is not None:
         builder.storage(storage)
-    if workers is not None:
+    if workers is not None and storage is not None:
         try:
             if (
                 int(workers) > 1
-                and storage is not None
                 and parallel_backend == "process"
                 and len(documents) < 200
             ):
@@ -60,6 +59,15 @@ def lunr(
         except TypeError:
             pass
         builder.parallel(workers=workers, backend=parallel_backend)
+    elif workers is not None:
+        try:
+            if int(workers) > 1:
+                warnings.warn(
+                    "workers>1 requires a SQL storage backend; ignoring parallel settings.",
+                    RuntimeWarning,
+                )
+        except TypeError:
+            pass
     builder.ref(ref)
     for field in fields:
         if isinstance(field, dict):

@@ -207,6 +207,21 @@ def test_lunr_workers_kwarg_for_sql_storage(documents):
     assert _refs(idx, "green study")
 
 
+def test_lunr_workers_without_storage_warns_and_keeps_in_memory_behavior(documents):
+    default_idx = lunr(ref="id", fields=("title", "body"), documents=documents)
+
+    with pytest.warns(RuntimeWarning, match="requires a SQL storage backend"):
+        workers_idx = lunr(
+            ref="id",
+            fields=("title", "body"),
+            documents=documents,
+            workers=2,
+            parallel_backend="thread",
+        )
+
+    assert _refs(workers_idx, "green study") == _refs(default_idx, "green study")
+
+
 def test_sql_backend_positions_metadata_matches_in_memory():
     docs = [
         {"id": "1", "test": "hello world hello"},
