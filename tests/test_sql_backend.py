@@ -74,3 +74,109 @@ def test_sql_backend_not_serializable(documents, sql_storage):
 
     with pytest.raises(BaseLunrException, match="cannot be serialized"):
         idx.serialize()
+
+
+def test_sql_backend_parallel_matches_single_worker(documents):
+    single_storage = SqlStorage.from_conn(sqlite3.connect(":memory:"), index_name="single", dialect="sqlite")
+    parallel_storage = SqlStorage.from_conn(sqlite3.connect(":memory:"), index_name="parallel", dialect="sqlite")
+
+    single_idx = _build_sql_index(documents, single_storage)
+
+    builder = get_default_builder()
+    builder.ref("id")
+    builder.field("title")
+    builder.field("body")
+    builder.storage(parallel_storage)
+    builder.parallel(workers=4, backend="thread")
+    for document in documents:
+        builder.add(document)
+    parallel_idx = builder.build()
+
+    query = "green study"
+    assert [result["ref"] for result in parallel_idx.search(query)] == [
+        result["ref"] for result in single_idx.search(query)
+    ]
+
+
+def test_lunr_workers_kwarg_for_sql_storage(documents):
+    storage = SqlStorage.from_conn(sqlite3.connect(":memory:"), index_name="workers", dialect="sqlite")
+    idx = lunr(
+        ref="id",
+        fields=("title", "body"),
+        documents=documents,
+        storage=storage,
+        workers=2,
+        parallel_backend="thread",
+    )
+
+    assert [result["ref"] for result in idx.search("green study")]
+
+
+def test_sql_backend_positions_metadata_matches_in_memory():
+    docs = [
+        {"id": "1", "test": "hello world hello"},
+        {"id": "2", "test": "world hello"},
+    ]
+
+    memory_builder = get_default_builder()
+    memory_builder.metadata_whitelist.append("position")
+    memory_idx = lunr(
+        ref="id",
+        fields=["id", "test"],
+        documents=docs,
+        builder=memory_builder,
+    )
+
+    sql_builder = get_default_builder()
+    sql_builder.metadata_whitelist.append("position")
+    sql_storage = SqlStorage.from_conn(sqlite3.connect(":memory:"), index_name="pos", dialect="sqlite")
+    sql_idx = lunr(
+        ref="id",
+        fields=["id", "test"],
+        documents=docs,
+        builder=sql_builder,
+        storage=sql_storage,
+    )
+
+    mem_posting = memory_idx.inverted_index["hello"]
+    sql_posting = sql_idx.inverted_index["hello"]
+
+    assert sql_posting["test"] == mem_posting["test"]
+    assert sql_posting["test"]["1"]["position"] == [[0, 5], [12, 5]]
+
+
+def test_sql_backend_parallel_positions_metadata_parity_with_single_worker():
+    docs = [
+        {"id": "1", "test": "hello world hello"},
+        {"id": "2", "test": "world hello"},
+        {"id": "3", "test": "hello hello hello"},
+    ]
+
+    single_builder = get_default_builder()
+    single_builder.metadata_whitelist.append("position")
+    single_storage = SqlStorage.from_conn(sqlite3.connect(":memory:"), index_name="single-pos", dialect="sqlite")
+    single_idx = lunr(
+        ref="id",
+        fields=["id", "test"],
+        documents=docs,
+        builder=single_builder,
+        storage=single_storage,
+    )
+
+    parallel_builder = get_default_builder()
+    parallel_builder.metadata_whitelist.append("position")
+    parallel_storage = SqlStorage.from_conn(sqlite3.connect(":memory:"), index_name="parallel-pos", dialect="sqlite")
+    parallel_idx = lunr(
+        ref="id",
+        fields=["id", "test"],
+        documents=docs,
+        builder=parallel_builder,
+        storage=parallel_storage,
+        workers=4,
+        parallel_backend="thread",
+    )
+
+    assert parallel_idx.inverted_index["hello"]["test"] == single_idx.inverted_index["hello"]["test"]
+    assert [result["ref"] for result in parallel_idx.search("hello")] == [
+        result["ref"] for result in single_idx.search("hello")
+    ]

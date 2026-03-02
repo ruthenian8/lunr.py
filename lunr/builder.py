@@ -1,4 +1,6 @@
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+import pickle
 
 
 from lunr.pipeline import Pipeline
@@ -8,6 +10,37 @@ from lunr.field_ref import FieldRef
 from lunr.index import Index
 from lunr.vector import Vector
 from lunr.idf import idf as Idf
+
+
+def _process_document_for_parallel(args):
+    doc_ref, doc, fields, pipeline, metadata_whitelist = args
+    partial_fields = {}
+
+    for field_name, extractor in fields:
+        field_value = doc[field_name] if extractor is None else extractor(doc)
+        tokens = Tokenizer(field_value)
+        terms = pipeline.run(tokens, field_name)
+        term_counts = defaultdict(int)
+        metadata_by_term = defaultdict(lambda: defaultdict(list))
+
+        for term in terms:
+            term_key = str(term)
+            term_counts[term_key] += 1
+            for metadata_key in metadata_whitelist:
+                metadata = term.metadata[metadata_key]
+                metadata_by_term[term_key][metadata_key].append(metadata)
+
+        serializable_metadata = {
+            term: {k: list(v) for k, v in values.items()}
+            for term, values in metadata_by_term.items()
+        }
+        partial_fields[field_name] = {
+            "length": len(terms),
+            "tfs": dict(term_counts),
+            "metadata": serializable_metadata,
+        }
+
+    return doc_ref, partial_fields
 
 
 class Field:
@@ -52,6 +85,9 @@ class Builder:
         # will persist the index into the backend on build() and return an
         # Index configured to read from it.
         self._storage_backend = None
+        self._parallel_workers = 1
+        self._parallel_backend = "process"
+        self._raw_documents = []
 
     def ref(self, ref):
         """Sets the document field used as the document reference.
@@ -143,7 +179,14 @@ class Builder:
         doc_ref = str(doc[self._ref])
         self._documents[doc_ref] = attributes or {}
         self.document_count += 1
+        self._raw_documents.append((doc_ref, doc))
 
+        if self._parallel_workers > 1:
+            return
+
+        self._index_document(doc_ref, doc)
+
+    def _index_document(self, doc_ref, doc):
         for field_name, field in self._fields.items():
             extractor = field.extractor
             field_value = doc[field_name] if extractor is None else extractor(doc)
@@ -179,6 +222,18 @@ class Builder:
                         metadata_key
                     ].append(metadata)
 
+    def parallel(self, workers=2, backend="process"):
+        """Enable parallel indexing.
+
+        Parallel indexing is currently supported for SQL-backed builds and is
+        opt-in. The worker count is clamped to the range 1..10.
+        """
+        self._parallel_workers = max(1, min(int(workers), 10))
+        if backend not in {"process", "thread"}:
+            raise ValueError("backend must be either 'process' or 'thread'")
+        self._parallel_backend = backend
+        return self
+
     # -------------------------------------------------------------------
     # Storage configuration
     # -------------------------------------------------------------------
@@ -205,6 +260,13 @@ class Builder:
         This completes the indexing process and should only be called once all
         documents have been added to the index.
         """
+        if self._storage_backend is not None and self._parallel_workers > 1:
+            return self._build_sql_parallel()
+
+        if self._parallel_workers > 1 and not self.inverted_index:
+            for doc_ref, doc in self._raw_documents:
+                self._index_document(doc_ref, doc)
+
         # Calculate average field lengths and construct field vectors in all
         # modes. These operations populate self.field_vectors and
         # self.field_lengths used by the scoring algorithm.
@@ -263,6 +325,86 @@ class Builder:
             pipeline=self.search_pipeline,
             storage_reader=reader,
         )
+
+    def _build_sql_parallel(self):
+        self.inverted_index = {}
+        self.field_term_frequencies = {}
+        self.field_lengths = {}
+        self.term_index = 0
+
+        fields = [(name, field.extractor) for name, field in self._fields.items()]
+        worker_payloads = [
+            (doc_ref, doc, fields, self.pipeline, self.metadata_whitelist)
+            for doc_ref, doc in self._raw_documents
+        ]
+
+        backend = self._parallel_backend
+        if backend == "process":
+            try:
+                pickle.dumps(worker_payloads[0] if worker_payloads else None)
+            except Exception:
+                backend = "thread"
+
+        executor_cls = ProcessPoolExecutor if backend == "process" else ThreadPoolExecutor
+        with executor_cls(max_workers=self._parallel_workers) as executor:
+            for doc_ref, partial_fields in executor.map(
+                _process_document_for_parallel, worker_payloads
+            ):
+                self._merge_partial(doc_ref, partial_fields)
+
+        self._calculate_average_field_lengths()
+        self._create_field_vectors()
+
+        writer = self._storage_backend.writer()
+        terms_batch = []
+        postings_batch = []
+        vectors_batch = []
+        for term, posting in self.inverted_index.items():
+            terms_batch.append((term, posting["_index"]))
+            for field_name in self._fields:
+                for doc_ref, metadata in posting.get(field_name, {}).items():
+                    postings_batch.append(
+                        (term, field_name, doc_ref, {k: list(v) for k, v in metadata.items()})
+                    )
+        for field_ref, vector in self.field_vectors.items():
+            parsed_ref = FieldRef.from_string(field_ref)
+            vectors_batch.append((field_ref, parsed_ref.field_name, parsed_ref.doc_ref, vector))
+
+        writer.upsert_terms_bulk(terms_batch)
+        writer.upsert_postings_bulk(postings_batch)
+        writer.upsert_field_vectors_bulk(vectors_batch)
+        writer.commit()
+
+        reader = self._storage_backend.reader()
+        from lunr.storage.sql import SqlInvertedIndexProxy, SqlFieldVectorsProxy
+
+        return Index(
+            inverted_index=SqlInvertedIndexProxy(reader),
+            field_vectors=SqlFieldVectorsProxy(reader),
+            token_set=None,
+            fields=list(self._fields.keys()),
+            pipeline=self.search_pipeline,
+            storage_reader=reader,
+        )
+
+    def _merge_partial(self, doc_ref, partial_fields):
+        for field_name, field_data in partial_fields.items():
+            field_ref = str(FieldRef(doc_ref, field_name))
+            self.field_lengths[field_ref] = field_data["length"]
+            self.field_term_frequencies[field_ref] = field_data["tfs"]
+
+            for term_key, tf in field_data["tfs"].items():
+                if term_key not in self.inverted_index:
+                    posting = {_field_name: {} for _field_name in self._fields}
+                    posting["_index"] = self.term_index
+                    self.term_index += 1
+                    self.inverted_index[term_key] = posting
+                if doc_ref not in self.inverted_index[term_key][field_name]:
+                    self.inverted_index[term_key][field_name][doc_ref] = defaultdict(list)
+
+                metadata_for_term = field_data["metadata"].get(term_key, {})
+                for metadata_key, values in metadata_for_term.items():
+                    self.inverted_index[term_key][field_name][doc_ref][metadata_key].extend(values)
 
     def _create_token_set(self):
         """Creates a token set of all tokens in the index using `lunr.TokenSet`"""

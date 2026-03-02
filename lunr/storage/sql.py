@@ -164,6 +164,10 @@ class SqlIndexWriter:
             ["index_name", "term"],
         )
 
+    def upsert_terms_bulk(self, rows: List[Tuple[str, int]]) -> None:
+        for term, term_index in rows:
+            self.upsert_term(term, term_index)
+
     def upsert_posting(self, term: str, field: str, doc_ref: str, metadata: Dict[str, List[Any]]) -> None:
         self._upsert(
             "lunr_postings",
@@ -171,6 +175,10 @@ class SqlIndexWriter:
             (self.index_name, term, field, doc_ref, json.dumps(metadata, sort_keys=True)),
             ["index_name", "term", "field", "doc_ref"],
         )
+
+    def upsert_postings_bulk(self, rows: List[Tuple[str, str, str, Dict[str, List[Any]]]]) -> None:
+        for term, field, doc_ref, metadata in rows:
+            self.upsert_posting(term, field, doc_ref, metadata)
 
     def upsert_field_vector(self, field_ref: str, field: str, doc_ref: str, vector: Vector) -> None:
         self._upsert(
@@ -186,6 +194,10 @@ class SqlIndexWriter:
             ),
             ["index_name", "field_ref"],
         )
+
+    def upsert_field_vectors_bulk(self, rows: List[Tuple[str, str, str, Vector]]) -> None:
+        for field_ref, field, doc_ref, vector in rows:
+            self.upsert_field_vector(field_ref, field, doc_ref, vector)
 
     def commit(self) -> None:
         self.conn.commit()

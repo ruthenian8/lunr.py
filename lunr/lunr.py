@@ -5,7 +5,16 @@ from lunr.trimmer import trimmer
 from lunr.stop_word_filter import stop_word_filter
 
 
-def lunr(ref, fields, documents, languages=None, builder=None, storage=None):
+def lunr(
+    ref,
+    fields,
+    documents,
+    languages=None,
+    builder=None,
+    storage=None,
+    workers=None,
+    parallel_backend="process",
+):
     """A convenience function to configure and construct a lunr.Index.
 
     Args:
@@ -28,6 +37,8 @@ def lunr(ref, fields, documents, languages=None, builder=None, storage=None):
     builder = builder or get_default_builder(languages)
     if storage is not None:
         builder.storage(storage)
+    if workers is not None:
+        builder.parallel(workers=workers, backend=parallel_backend)
     builder.ref(ref)
     for field in fields:
         if isinstance(field, dict):
