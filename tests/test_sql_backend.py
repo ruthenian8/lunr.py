@@ -13,8 +13,19 @@ from lunr.storage.sql import SqlStorage
 
 @pytest.fixture
 def sql_storage():
-    conn = sqlite3.connect(":memory:")
-    return SqlStorage.from_conn(conn, index_name="test_idx", dialect="sqlite")
+    return _sqlite_storage("test_idx")
+
+
+def _sqlite_storage(index_name):
+    return SqlStorage.from_conn(
+        sqlite3.connect(":memory:"),
+        index_name=index_name,
+        dialect="sqlite",
+    )
+
+
+def _refs(idx, query):
+    return [result["ref"] for result in idx.search(query)]
 
 
 def _parse_mysql_user_and_db(raw_value):
@@ -116,8 +127,8 @@ def test_sql_backend_matches_memory_for_positive_queries(documents, sql_storage)
     sql_idx = _build_sql_index(documents, sql_storage)
 
     query = "green study"
-    mem_refs = [result["ref"] for result in mem_idx.search(query)]
-    sql_refs = [result["ref"] for result in sql_idx.search(query)]
+    mem_refs = _refs(mem_idx, query)
+    sql_refs = _refs(sql_idx, query)
 
     assert sql_refs == mem_refs
 
@@ -162,6 +173,207 @@ def test_sql_backend_not_serializable(documents, sql_storage):
         idx.serialize()
 
 
+def test_sql_backend_parallel_matches_single_worker(documents):
+    single_storage = _sqlite_storage("single")
+    parallel_storage = _sqlite_storage("parallel")
+
+    single_idx = _build_sql_index(documents, single_storage)
+
+    builder = get_default_builder()
+    builder.ref("id")
+    builder.field("title")
+    builder.field("body")
+    builder.storage(parallel_storage)
+    builder.parallel(workers=4, backend="thread")
+    for document in documents:
+        builder.add(document)
+    parallel_idx = builder.build()
+
+    query = "green study"
+    assert _refs(parallel_idx, query) == _refs(single_idx, query)
+
+
+def test_lunr_workers_kwarg_for_sql_storage(documents):
+    storage = _sqlite_storage("workers")
+    idx = lunr(
+        ref="id",
+        fields=("title", "body"),
+        documents=documents,
+        storage=storage,
+        workers=2,
+        parallel_backend="thread",
+    )
+
+    assert _refs(idx, "green study")
+
+
+def test_lunr_workers_without_storage_warns_and_keeps_in_memory_behavior(documents):
+    default_idx = lunr(ref="id", fields=("title", "body"), documents=documents)
+
+    with pytest.warns(RuntimeWarning, match="requires a SQL storage backend"):
+        workers_idx = lunr(
+            ref="id",
+            fields=("title", "body"),
+            documents=documents,
+            workers=2,
+            parallel_backend="thread",
+        )
+
+    assert _refs(workers_idx, "green study") == _refs(default_idx, "green study")
+
+
+def test_sql_backend_positions_metadata_matches_in_memory():
+    docs = [
+        {"id": "1", "test": "hello world hello"},
+        {"id": "2", "test": "world hello"},
+    ]
+
+    memory_builder = get_default_builder()
+    memory_builder.metadata_whitelist.append("position")
+    memory_idx = lunr(
+        ref="id",
+        fields=["id", "test"],
+        documents=docs,
+        builder=memory_builder,
+    )
+
+    sql_builder = get_default_builder()
+    sql_builder.metadata_whitelist.append("position")
+    sql_storage = _sqlite_storage("pos")
+    sql_idx = lunr(
+        ref="id",
+        fields=["id", "test"],
+        documents=docs,
+        builder=sql_builder,
+        storage=sql_storage,
+    )
+
+    mem_posting = memory_idx.inverted_index["hello"]
+    sql_posting = sql_idx.inverted_index["hello"]
+
+    assert sql_posting["test"] == mem_posting["test"]
+    assert sql_posting["test"]["1"]["position"] == [[0, 5], [12, 5]]
+
+
+def test_sql_backend_parallel_positions_metadata_parity_with_single_worker():
+    docs = [
+        {"id": "1", "test": "hello world hello"},
+        {"id": "2", "test": "world hello"},
+        {"id": "3", "test": "hello hello hello"},
+    ]
+
+    single_builder = get_default_builder()
+    single_builder.metadata_whitelist.append("position")
+    single_storage = _sqlite_storage("single-pos")
+    single_idx = lunr(
+        ref="id",
+        fields=["id", "test"],
+        documents=docs,
+        builder=single_builder,
+        storage=single_storage,
+    )
+
+    parallel_builder = get_default_builder()
+    parallel_builder.metadata_whitelist.append("position")
+    parallel_storage = _sqlite_storage("parallel-pos")
+    parallel_idx = lunr(
+        ref="id",
+        fields=["id", "test"],
+        documents=docs,
+        builder=parallel_builder,
+        storage=parallel_storage,
+        workers=4,
+        parallel_backend="thread",
+    )
+
+    assert (
+        parallel_idx.inverted_index["hello"]["test"]
+        == single_idx.inverted_index["hello"]["test"]
+    )
+    assert _refs(parallel_idx, "hello") == _refs(single_idx, "hello")
+
+
+def test_sql_backend_parallel_process_backend_matches_thread_backend(documents):
+    process_storage = _sqlite_storage("process")
+    thread_storage = _sqlite_storage("thread")
+
+    process_idx = lunr(
+        ref="id",
+        fields=("title", "body"),
+        documents=documents,
+        storage=process_storage,
+        workers=2,
+        parallel_backend="process",
+    )
+    thread_idx = lunr(
+        ref="id",
+        fields=("title", "body"),
+        documents=documents,
+        storage=thread_storage,
+        workers=2,
+        parallel_backend="thread",
+    )
+
+    assert _refs(process_idx, "green study") == _refs(thread_idx, "green study")
+
+
+def test_sql_backend_process_backend_falls_back_when_payload_is_unpicklable():
+    docs = [{"id": "1", "title": "hello", "body": "hello world"}]
+    storage = _sqlite_storage("fallback")
+
+    with pytest.warns(RuntimeWarning, match="falling back to 'thread'"):
+        idx = lunr(
+            ref="id",
+            fields=[
+                "id",
+                {"field_name": "title", "extractor": lambda doc: doc["title"]},
+                "body",
+            ],
+            documents=docs,
+            storage=storage,
+            workers=2,
+            parallel_backend="process",
+        )
+
+    assert _refs(idx, "hello") == ["1"]
+
+
+def test_sql_backend_incremental_flush_matches_standard(documents):
+    standard_idx = _build_sql_index(documents, _sqlite_storage("standard"))
+
+    builder = get_default_builder()
+    builder.ref("id")
+    builder.field("title")
+    builder.field("body")
+    builder.storage(_sqlite_storage("incremental"))
+    builder.sql_flush(enabled=True, doc_batch_size=1, row_batch_size=2)
+    for document in documents:
+        builder.add(document)
+
+    incremental_idx = builder.build()
+
+    assert _refs(incremental_idx, "green study") == _refs(standard_idx, "green study")
+
+
+def test_sql_backend_parallel_incremental_flush_matches_standard(documents):
+    standard_idx = _build_sql_index(documents, _sqlite_storage("standard-parallel"))
+
+    builder = get_default_builder()
+    builder.ref("id")
+    builder.field("title")
+    builder.field("body")
+    builder.storage(_sqlite_storage("incremental-parallel"))
+    builder.parallel(workers=2, backend="thread")
+    builder.sql_flush(enabled=True, doc_batch_size=1, row_batch_size=2)
+    builder.sql_commit_every(docs=1, rows=2)
+    for document in documents:
+        builder.add(document)
+
+    incremental_idx = builder.build()
+
+    assert _refs(incremental_idx, "green study") == _refs(standard_idx, "green study")
+
+
 @pytest.mark.mysql
 def test_mysql_backend_matches_memory_for_positive_queries(documents, mysql_storage):
     mem_idx = lunr(ref="id", fields=("title", "body"), documents=documents)
@@ -186,7 +398,9 @@ def test_mysql_backend_wildcard_expansion(documents, mysql_storage):
 
 
 @pytest.mark.mysql
-def test_mysql_backend_disables_prohibited_and_negated_queries(documents, mysql_storage):
+def test_mysql_backend_disables_prohibited_and_negated_queries(
+    documents, mysql_storage
+):
     idx = _build_sql_index(documents, mysql_storage)
 
     query = idx.create_query()
@@ -225,10 +439,9 @@ def test_mysql_storage_uses_mysql_dialect(mysql_storage):
     assert mysql_storage.dialect.upsert == "duplicate"
 
 
-def test_parse_mysql_user_and_db_supports_compound_values():
-    assert _parse_mysql_user_and_db("user:db") == ("user", "db")
-    assert _parse_mysql_user_and_db("user/db") == ("user", "db")
-    assert _parse_mysql_user_and_db("user,db") == ("user", "db")
+@pytest.mark.parametrize("raw_value", ["user:db", "user/db", "user,db"])
+def test_parse_mysql_user_and_db_supports_compound_values(raw_value):
+    assert _parse_mysql_user_and_db(raw_value) == ("user", "db")
 
 
 def test_parse_mysql_user_and_db_defaults_database_to_user():

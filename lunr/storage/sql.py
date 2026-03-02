@@ -45,27 +45,53 @@ class SqlStorage:
                 db_path = path
             else:
                 db_path = ":memory:"
-            return cls(sqlite3.connect(db_path), index_name=index_name, dialect="sqlite")
+            return cls(
+                sqlite3.connect(db_path), index_name=index_name, dialect="sqlite"
+            )
 
         if parsed.scheme in {"postgresql", "postgres"}:
             try:
                 import psycopg
 
-                return cls(psycopg.connect(url), index_name=index_name, dialect="postgresql")
+                return cls(
+                    psycopg.connect(url), index_name=index_name, dialect="postgresql"
+                )
             except ImportError:
                 import psycopg2
 
-                return cls(psycopg2.connect(url), index_name=index_name, dialect="postgresql")
+                return cls(
+                    psycopg2.connect(url), index_name=index_name, dialect="postgresql"
+                )
 
         if parsed.scheme == "mysql":
             try:
                 import pymysql
 
-                return cls(pymysql.connect(host=parsed.hostname, user=parsed.username, password=parsed.password, database=parsed.path.lstrip("/"), port=parsed.port or 3306), index_name=index_name, dialect="mysql")
+                return cls(
+                    pymysql.connect(
+                        host=parsed.hostname,
+                        user=parsed.username,
+                        password=parsed.password,
+                        database=parsed.path.lstrip("/"),
+                        port=parsed.port or 3306,
+                    ),
+                    index_name=index_name,
+                    dialect="mysql",
+                )
             except ImportError:
                 import MySQLdb
 
-                return cls(MySQLdb.connect(host=parsed.hostname, user=parsed.username, passwd=parsed.password, db=parsed.path.lstrip("/"), port=parsed.port or 3306), index_name=index_name, dialect="mysql")
+                return cls(
+                    MySQLdb.connect(
+                        host=parsed.hostname,
+                        user=parsed.username,
+                        passwd=parsed.password,
+                        db=parsed.path.lstrip("/"),
+                        port=parsed.port or 3306,
+                    ),
+                    index_name=index_name,
+                    dialect="mysql",
+                )
 
         raise ValueError("Unsupported SQL URL scheme")
 
@@ -127,14 +153,69 @@ class SqlStorage:
             )
             """
         )
+        c.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS lunr_doc_fields (
+                index_name {key_text} NOT NULL,
+                field_ref {key_text} NOT NULL,
+                field {key_text} NOT NULL,
+                doc_ref {key_text} NOT NULL,
+                length INTEGER NOT NULL,
+                PRIMARY KEY (index_name, field_ref)
+            )
+            """
+        )
+        c.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS lunr_term_frequencies (
+                index_name {key_text} NOT NULL,
+                field_ref {key_text} NOT NULL,
+                term {key_text} NOT NULL,
+                tf INTEGER NOT NULL,
+                PRIMARY KEY (index_name, field_ref, term)
+            )
+            """
+        )
         if self.dialect.name == "mysql":
-            try:
-                c.execute("CREATE INDEX idx_lunr_postings_term_field ON lunr_postings (index_name, term, field)")
-            except Exception as exc:
-                if "Duplicate key name" not in str(exc):
-                    raise
+            indexes = [
+                (
+                    "idx_lunr_postings_term_field",
+                    "lunr_postings",
+                    "(index_name, term, field)",
+                ),
+                ("idx_lunr_doc_fields_field", "lunr_doc_fields", "(index_name, field)"),
+                (
+                    "idx_lunr_tf_field_ref",
+                    "lunr_term_frequencies",
+                    "(index_name, field_ref)",
+                ),
+            ]
+            for index_name, table_name, columns in indexes:
+                c.execute(
+                    """
+                    SELECT COUNT(1)
+                    FROM information_schema.statistics
+                    WHERE table_schema = DATABASE()
+                      AND table_name = %s
+                      AND index_name = %s
+                    """,
+                    (table_name, index_name),
+                )
+                if c.fetchone()[0] == 0:
+                    c.execute(f"CREATE INDEX {index_name} ON {table_name} {columns}")
         else:
-            c.execute("CREATE INDEX IF NOT EXISTS idx_lunr_postings_term_field ON lunr_postings (index_name, term, field)")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lunr_postings_term_field ON "
+                "lunr_postings (index_name, term, field)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lunr_doc_fields_field ON "
+                "lunr_doc_fields (index_name, field)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lunr_tf_field_ref ON "
+                "lunr_term_frequencies (index_name, field_ref)"
+            )
         self.conn.commit()
 
     def writer(self) -> "SqlIndexWriter":
@@ -151,12 +232,21 @@ class SqlIndexWriter:
         self.index_name = storage.index_name
         self.storage.ensure_schema()
 
-    def _upsert(self, table: str, columns: List[str], values: Tuple[Any, ...], key_columns: List[str]) -> None:
+    def _upsert(
+        self,
+        table: str,
+        columns: List[str],
+        values: Tuple[Any, ...],
+        key_columns: List[str],
+    ) -> None:
         c = self.conn.cursor()
         placeholders = ", ".join([self.storage.dialect.placeholder] * len(columns))
         cols = ", ".join(columns)
         if self.storage.dialect.upsert == "replace":
-            c.execute(f"INSERT OR REPLACE INTO {table} ({cols}) VALUES ({placeholders})", values)
+            c.execute(
+                f"INSERT OR REPLACE INTO {table} ({cols}) VALUES ({placeholders})",
+                values,
+            )
             return
 
         if self.storage.dialect.upsert == "conflict":
@@ -169,7 +259,9 @@ class SqlIndexWriter:
             )
             return
 
-        updates = ", ".join([f"{col}=VALUES({col})" for col in columns if col not in key_columns])
+        updates = ", ".join(
+            [f"{col}=VALUES({col})" for col in columns if col not in key_columns]
+        )
         c.execute(
             f"INSERT INTO {table} ({cols}) VALUES ({placeholders}) "
             f"ON DUPLICATE KEY UPDATE {updates}",
@@ -184,15 +276,102 @@ class SqlIndexWriter:
             ["index_name", "term"],
         )
 
-    def upsert_posting(self, term: str, field: str, doc_ref: str, metadata: Dict[str, List[Any]]) -> None:
+    def upsert_terms_bulk(self, rows: List[Tuple[str, int]]) -> None:
+        if not rows:
+            return
+
+        c = self.conn.cursor()
+        placeholders = ", ".join([self.storage.dialect.placeholder] * 3)
+        values = [(self.index_name, term, term_index) for term, term_index in rows]
+
+        if self.storage.dialect.upsert == "replace":
+            c.executemany(
+                "INSERT OR REPLACE INTO lunr_terms "
+                f"(index_name, term, term_index) VALUES ({placeholders})",
+                values,
+            )
+            return
+
+        if self.storage.dialect.upsert == "conflict":
+            c.executemany(
+                "INSERT INTO lunr_terms (index_name, term, term_index) "
+                f"VALUES ({placeholders}) "
+                "ON CONFLICT (index_name, term) DO UPDATE "
+                "SET term_index=EXCLUDED.term_index",
+                values,
+            )
+            return
+
+        c.executemany(
+            "INSERT INTO lunr_terms (index_name, term, term_index) "
+            f"VALUES ({placeholders}) "
+            "ON DUPLICATE KEY UPDATE term_index=VALUES(term_index)",
+            values,
+        )
+
+    def upsert_posting(
+        self, term: str, field: str, doc_ref: str, metadata: Dict[str, List[Any]]
+    ) -> None:
         self._upsert(
             "lunr_postings",
             ["index_name", "term", "field", "doc_ref", "metadata"],
-            (self.index_name, term, field, doc_ref, json.dumps(metadata, sort_keys=True)),
+            (
+                self.index_name,
+                term,
+                field,
+                doc_ref,
+                json.dumps(metadata, sort_keys=True),
+            ),
             ["index_name", "term", "field", "doc_ref"],
         )
 
-    def upsert_field_vector(self, field_ref: str, field: str, doc_ref: str, vector: Vector) -> None:
+    def upsert_postings_bulk(
+        self, rows: List[Tuple[str, str, str, Dict[str, List[Any]]]]
+    ) -> None:
+        if not rows:
+            return
+
+        c = self.conn.cursor()
+        placeholders = ", ".join([self.storage.dialect.placeholder] * 5)
+        values = [
+            (
+                self.index_name,
+                term,
+                field,
+                doc_ref,
+                json.dumps(metadata, sort_keys=True),
+            )
+            for term, field, doc_ref, metadata in rows
+        ]
+
+        if self.storage.dialect.upsert == "replace":
+            c.executemany(
+                "INSERT OR REPLACE INTO lunr_postings "
+                f"(index_name, term, field, doc_ref, metadata) VALUES ({placeholders})",
+                values,
+            )
+            return
+
+        if self.storage.dialect.upsert == "conflict":
+            c.executemany(
+                "INSERT INTO lunr_postings (index_name, term, field, doc_ref, metadata) "
+                f"VALUES ({placeholders}) "
+                "ON CONFLICT (index_name, term, field, doc_ref) DO UPDATE "
+                "SET metadata=EXCLUDED.metadata",
+                values,
+            )
+            return
+
+        c.executemany(
+            "INSERT INTO lunr_postings (index_name, term, field, doc_ref, metadata) "
+            f"VALUES ({placeholders}) "
+            "ON DUPLICATE KEY UPDATE metadata=VALUES(metadata)",
+            values,
+        )
+
+    def upsert_field_vector(
+        self, field_ref: str, field: str, doc_ref: str, vector: Vector
+    ) -> None:
         self._upsert(
             "lunr_field_vectors",
             ["index_name", "field_ref", "field", "doc_ref", "elements", "magnitude"],
@@ -207,8 +386,135 @@ class SqlIndexWriter:
             ["index_name", "field_ref"],
         )
 
+    def upsert_field_vectors_bulk(
+        self, rows: List[Tuple[str, str, str, Vector]]
+    ) -> None:
+        if not rows:
+            return
+
+        c = self.conn.cursor()
+        placeholders = ", ".join([self.storage.dialect.placeholder] * 6)
+        values = [
+            (
+                self.index_name,
+                field_ref,
+                field,
+                doc_ref,
+                json.dumps(vector.serialize()),
+                vector.magnitude,
+            )
+            for field_ref, field, doc_ref, vector in rows
+        ]
+
+        if self.storage.dialect.upsert == "replace":
+            c.executemany(
+                "INSERT OR REPLACE INTO lunr_field_vectors "
+                f"(index_name, field_ref, field, doc_ref, elements, magnitude) "
+                f"VALUES ({placeholders})",
+                values,
+            )
+            return
+
+        if self.storage.dialect.upsert == "conflict":
+            c.executemany(
+                "INSERT INTO lunr_field_vectors "
+                "(index_name, field_ref, field, doc_ref, elements, magnitude) "
+                f"VALUES ({placeholders}) "
+                "ON CONFLICT (index_name, field_ref) DO UPDATE "
+                "SET field=EXCLUDED.field, doc_ref=EXCLUDED.doc_ref, "
+                "elements=EXCLUDED.elements, magnitude=EXCLUDED.magnitude",
+                values,
+            )
+            return
+
+        c.executemany(
+            "INSERT INTO lunr_field_vectors "
+            "(index_name, field_ref, field, doc_ref, elements, magnitude) "
+            f"VALUES ({placeholders}) "
+            "ON DUPLICATE KEY UPDATE field=VALUES(field), doc_ref=VALUES(doc_ref), "
+            "elements=VALUES(elements), magnitude=VALUES(magnitude)",
+            values,
+        )
+
     def commit(self) -> None:
         self.conn.commit()
+
+    def upsert_doc_fields_bulk(self, rows: List[Tuple[str, str, str, int]]) -> None:
+        if not rows:
+            return
+
+        c = self.conn.cursor()
+        placeholders = ", ".join([self.storage.dialect.placeholder] * 5)
+        values = [
+            (self.index_name, field_ref, field, doc_ref, length)
+            for field_ref, field, doc_ref, length in rows
+        ]
+
+        if self.storage.dialect.upsert == "replace":
+            c.executemany(
+                "INSERT OR REPLACE INTO lunr_doc_fields "
+                f"(index_name, field_ref, field, doc_ref, length) VALUES ({placeholders})",
+                values,
+            )
+            return
+
+        if self.storage.dialect.upsert == "conflict":
+            c.executemany(
+                "INSERT INTO lunr_doc_fields "
+                "(index_name, field_ref, field, doc_ref, length) "
+                f"VALUES ({placeholders}) "
+                "ON CONFLICT (index_name, field_ref) DO UPDATE "
+                "SET field=EXCLUDED.field, doc_ref=EXCLUDED.doc_ref, "
+                "length=EXCLUDED.length",
+                values,
+            )
+            return
+
+        c.executemany(
+            "INSERT INTO lunr_doc_fields "
+            "(index_name, field_ref, field, doc_ref, length) "
+            f"VALUES ({placeholders}) "
+            "ON DUPLICATE KEY UPDATE field=VALUES(field), doc_ref=VALUES(doc_ref), "
+            "length=VALUES(length)",
+            values,
+        )
+
+    def upsert_term_frequencies_bulk(self, rows: List[Tuple[str, str, int]]) -> None:
+        if not rows:
+            return
+
+        c = self.conn.cursor()
+        placeholders = ", ".join([self.storage.dialect.placeholder] * 4)
+        values = [
+            (self.index_name, field_ref, term, tf) for field_ref, term, tf in rows
+        ]
+
+        if self.storage.dialect.upsert == "replace":
+            c.executemany(
+                "INSERT OR REPLACE INTO lunr_term_frequencies "
+                f"(index_name, field_ref, term, tf) VALUES ({placeholders})",
+                values,
+            )
+            return
+
+        if self.storage.dialect.upsert == "conflict":
+            c.executemany(
+                "INSERT INTO lunr_term_frequencies "
+                "(index_name, field_ref, term, tf) "
+                f"VALUES ({placeholders}) "
+                "ON CONFLICT (index_name, field_ref, term) DO UPDATE "
+                "SET tf=EXCLUDED.tf",
+                values,
+            )
+            return
+
+        c.executemany(
+            "INSERT INTO lunr_term_frequencies "
+            "(index_name, field_ref, term, tf) "
+            f"VALUES ({placeholders}) "
+            "ON DUPLICATE KEY UPDATE tf=VALUES(tf)",
+            values,
+        )
 
 
 class SqlIndexReader:
@@ -220,7 +526,11 @@ class SqlIndexReader:
     def expand_terms(self, term_pattern: str) -> List[str]:
         c = self.conn.cursor()
         if "*" in term_pattern:
-            escaped = term_pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            escaped = (
+                term_pattern.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
             like_pattern = escaped.replace("*", "%")
             if self.storage.dialect.name == "mysql":
                 c.execute(
@@ -279,6 +589,27 @@ class SqlIndexReader:
         )
         for (field_ref,) in c.fetchall():
             yield field_ref
+
+    def iter_doc_fields(self) -> Iterator[Tuple[str, str, str, int]]:
+        c = self.conn.cursor()
+        c.execute(
+            f"SELECT field_ref, field, doc_ref, length FROM lunr_doc_fields "
+            f"WHERE index_name = {self.storage.dialect.placeholder}",
+            (self.index_name,),
+        )
+        for row in c.fetchall():
+            yield row
+
+    def iter_term_frequencies(self) -> Iterator[Tuple[str, str, int]]:
+        c = self.conn.cursor()
+        c.execute(
+            f"SELECT field_ref, term, tf FROM lunr_term_frequencies "
+            f"WHERE index_name = {self.storage.dialect.placeholder} "
+            "ORDER BY field_ref",
+            (self.index_name,),
+        )
+        for row in c.fetchall():
+            yield row
 
 
 class SqlInvertedIndexProxy(Mapping):

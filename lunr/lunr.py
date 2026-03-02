@@ -1,3 +1,5 @@
+import warnings
+
 from lunr import languages as lang
 from lunr.builder import Builder
 from lunr.stemmer import stemmer
@@ -5,7 +7,16 @@ from lunr.trimmer import trimmer
 from lunr.stop_word_filter import stop_word_filter
 
 
-def lunr(ref, fields, documents, languages=None, builder=None, storage=None):
+def lunr(
+    ref,
+    fields,
+    documents,
+    languages=None,
+    builder=None,
+    storage=None,
+    workers=None,
+    parallel_backend="process",
+):
     """A convenience function to configure and construct a lunr.Index.
 
     Args:
@@ -21,6 +32,12 @@ def lunr(ref, fields, documents, languages=None, builder=None, storage=None):
             the document and the second the associated attributes to it.
         languages (str or list, optional): The languages to use if using
             NLTK language support, ignored if NLTK is not available.
+        builder (Builder, optional): A pre-configured builder instance.
+        storage (SqlStorage, optional): Optional SQL storage backend.
+        workers (int, optional): Number of workers to use for SQL-backed
+            parallel builds. If omitted, defaults to single-worker behavior.
+        parallel_backend (str, optional): Parallel executor backend,
+            either "process" or "thread".
 
     Returns:
         Index: The populated Index ready to search against.
@@ -28,6 +45,29 @@ def lunr(ref, fields, documents, languages=None, builder=None, storage=None):
     builder = builder or get_default_builder(languages)
     if storage is not None:
         builder.storage(storage)
+    if workers is not None and storage is not None:
+        try:
+            if (
+                int(workers) > 1
+                and parallel_backend == "process"
+                and len(documents) < 200
+            ):
+                warnings.warn(
+                    "workers>1 on small corpora may be slower due to parallel overhead.",
+                    RuntimeWarning,
+                )
+        except TypeError:
+            pass
+        builder.parallel(workers=workers, backend=parallel_backend)
+    elif workers is not None:
+        try:
+            if int(workers) > 1:
+                warnings.warn(
+                    "workers>1 requires a SQL storage backend; ignoring parallel settings.",
+                    RuntimeWarning,
+                )
+        except TypeError:
+            pass
     builder.ref(ref)
     for field in fields:
         if isinstance(field, dict):

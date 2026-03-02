@@ -159,3 +159,29 @@ We can now search the index as usual:
 [{'ref': 'b', 'score': 0.3, 'match_data': <MatchData "plumb">}
  {'ref': 'c', 'score': 0.13, 'match_data': <MatchData "plumb">}]
 ```
+
+## SQL-backed parallel and incremental indexing
+
+For SQL-backed indexes you can enable parallel document processing and
+bounded-memory flushing.
+
+```python
+from lunr import get_default_builder
+from lunr.storage.sql import SqlStorage
+
+builder = get_default_builder()
+builder.ref("id")
+builder.field("title")
+builder.field("body")
+builder.storage(SqlStorage.from_url("sqlite:///:memory:", index_name="idx"))
+builder.parallel(workers=4, backend="process")
+builder.sql_flush(enabled=True, doc_batch_size=500, row_batch_size=5000)
+builder.sql_commit_every(docs=2000)
+```
+
+Notes:
+- `backend="process"` requires picklable payloads (documents/extractors/pipeline).
+  If not picklable, Lunr falls back to `thread` and emits a `RuntimeWarning`.
+- Incremental flushing reduces peak RAM by writing postings and term frequencies
+  in chunks before vector finalization.
+- Leading wildcard queries (`*term`) can still be expensive on large SQL tables.
