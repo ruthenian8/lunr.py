@@ -88,6 +88,7 @@ class Builder:
         self._parallel_workers = 1
         self._parallel_backend = "process"
         self._raw_documents = []
+        self._defer_indexing = False
 
     def ref(self, ref):
         """Sets the document field used as the document reference.
@@ -179,7 +180,9 @@ class Builder:
         doc_ref = str(doc[self._ref])
         self._documents[doc_ref] = attributes or {}
         self.document_count += 1
-        self._raw_documents.append((doc_ref, doc))
+        if self._parallel_workers > 1:
+            self._raw_documents.append((doc_ref, doc))
+            self._defer_indexing = True
 
         if self._parallel_workers > 1:
             return
@@ -263,9 +266,11 @@ class Builder:
         if self._storage_backend is not None and self._parallel_workers > 1:
             return self._build_sql_parallel()
 
-        if self._parallel_workers > 1 and not self.inverted_index:
+        if self._defer_indexing and self._raw_documents and not self.inverted_index:
             for doc_ref, doc in self._raw_documents:
                 self._index_document(doc_ref, doc)
+            self._raw_documents = []
+            self._defer_indexing = False
 
         # Calculate average field lengths and construct field vectors in all
         # modes. These operations populate self.field_vectors and
@@ -315,6 +320,7 @@ class Builder:
         # Create reader and proxies for the Index. No token_set is provided.
         reader = self._storage_backend.reader()
         from lunr.storage.sql import SqlInvertedIndexProxy, SqlFieldVectorsProxy
+
         inverted_index_proxy = SqlInvertedIndexProxy(reader)
         field_vectors_proxy = SqlFieldVectorsProxy(reader)
         return Index(
@@ -341,11 +347,14 @@ class Builder:
         backend = self._parallel_backend
         if backend == "process":
             try:
-                pickle.dumps(worker_payloads[0] if worker_payloads else None)
+                for payload in worker_payloads:
+                    pickle.dumps(payload)
             except Exception:
                 backend = "thread"
 
-        executor_cls = ProcessPoolExecutor if backend == "process" else ThreadPoolExecutor
+        executor_cls = (
+            ProcessPoolExecutor if backend == "process" else ThreadPoolExecutor
+        )
         with executor_cls(max_workers=self._parallel_workers) as executor:
             for doc_ref, partial_fields in executor.map(
                 _process_document_for_parallel, worker_payloads
@@ -356,24 +365,48 @@ class Builder:
         self._create_field_vectors()
 
         writer = self._storage_backend.writer()
+        batch_size = 1000
         terms_batch = []
         postings_batch = []
         vectors_batch = []
         for term, posting in self.inverted_index.items():
             terms_batch.append((term, posting["_index"]))
+            if len(terms_batch) >= batch_size:
+                writer.upsert_terms_bulk(terms_batch)
+                terms_batch = []
+
             for field_name in self._fields:
                 for doc_ref, metadata in posting.get(field_name, {}).items():
                     postings_batch.append(
-                        (term, field_name, doc_ref, {k: list(v) for k, v in metadata.items()})
+                        (
+                            term,
+                            field_name,
+                            doc_ref,
+                            {k: list(v) for k, v in metadata.items()},
+                        )
                     )
+                    if len(postings_batch) >= batch_size:
+                        writer.upsert_postings_bulk(postings_batch)
+                        postings_batch = []
+
         for field_ref, vector in self.field_vectors.items():
             parsed_ref = FieldRef.from_string(field_ref)
-            vectors_batch.append((field_ref, parsed_ref.field_name, parsed_ref.doc_ref, vector))
+            vectors_batch.append(
+                (field_ref, parsed_ref.field_name, parsed_ref.doc_ref, vector)
+            )
+            if len(vectors_batch) >= batch_size:
+                writer.upsert_field_vectors_bulk(vectors_batch)
+                vectors_batch = []
 
-        writer.upsert_terms_bulk(terms_batch)
-        writer.upsert_postings_bulk(postings_batch)
-        writer.upsert_field_vectors_bulk(vectors_batch)
+        if terms_batch:
+            writer.upsert_terms_bulk(terms_batch)
+        if postings_batch:
+            writer.upsert_postings_bulk(postings_batch)
+        if vectors_batch:
+            writer.upsert_field_vectors_bulk(vectors_batch)
         writer.commit()
+        self._raw_documents = []
+        self._defer_indexing = False
 
         reader = self._storage_backend.reader()
         from lunr.storage.sql import SqlInvertedIndexProxy, SqlFieldVectorsProxy
@@ -393,18 +426,22 @@ class Builder:
             self.field_lengths[field_ref] = field_data["length"]
             self.field_term_frequencies[field_ref] = field_data["tfs"]
 
-            for term_key, tf in field_data["tfs"].items():
+            for term_key, _ in field_data["tfs"].items():
                 if term_key not in self.inverted_index:
                     posting = {_field_name: {} for _field_name in self._fields}
                     posting["_index"] = self.term_index
                     self.term_index += 1
                     self.inverted_index[term_key] = posting
                 if doc_ref not in self.inverted_index[term_key][field_name]:
-                    self.inverted_index[term_key][field_name][doc_ref] = defaultdict(list)
+                    self.inverted_index[term_key][field_name][doc_ref] = defaultdict(
+                        list
+                    )
 
                 metadata_for_term = field_data["metadata"].get(term_key, {})
                 for metadata_key, values in metadata_for_term.items():
-                    self.inverted_index[term_key][field_name][doc_ref][metadata_key].extend(values)
+                    self.inverted_index[term_key][field_name][doc_ref][
+                        metadata_key
+                    ].extend(values)
 
     def _create_token_set(self):
         """Creates a token set of all tokens in the index using `lunr.TokenSet`"""

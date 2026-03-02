@@ -30,6 +30,12 @@ def lunr(
             the document and the second the associated attributes to it.
         languages (str or list, optional): The languages to use if using
             NLTK language support, ignored if NLTK is not available.
+        builder (Builder, optional): A pre-configured builder instance.
+        storage (SqlStorage, optional): Optional SQL storage backend.
+        workers (int, optional): Number of workers to use for SQL-backed
+            parallel builds. If omitted, defaults to single-worker behavior.
+        parallel_backend (str, optional): Parallel executor backend,
+            either "process" or "thread".
 
     Returns:
         Index: The populated Index ready to search against.

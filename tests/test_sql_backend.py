@@ -77,8 +77,16 @@ def test_sql_backend_not_serializable(documents, sql_storage):
 
 
 def test_sql_backend_parallel_matches_single_worker(documents):
-    single_storage = SqlStorage.from_conn(sqlite3.connect(":memory:"), index_name="single", dialect="sqlite")
-    parallel_storage = SqlStorage.from_conn(sqlite3.connect(":memory:"), index_name="parallel", dialect="sqlite")
+    single_storage = SqlStorage.from_conn(
+        sqlite3.connect(":memory:"),
+        index_name="single",
+        dialect="sqlite",
+    )
+    parallel_storage = SqlStorage.from_conn(
+        sqlite3.connect(":memory:"),
+        index_name="parallel",
+        dialect="sqlite",
+    )
 
     single_idx = _build_sql_index(documents, single_storage)
 
@@ -99,7 +107,11 @@ def test_sql_backend_parallel_matches_single_worker(documents):
 
 
 def test_lunr_workers_kwarg_for_sql_storage(documents):
-    storage = SqlStorage.from_conn(sqlite3.connect(":memory:"), index_name="workers", dialect="sqlite")
+    storage = SqlStorage.from_conn(
+        sqlite3.connect(":memory:"),
+        index_name="workers",
+        dialect="sqlite",
+    )
     idx = lunr(
         ref="id",
         fields=("title", "body"),
@@ -129,7 +141,11 @@ def test_sql_backend_positions_metadata_matches_in_memory():
 
     sql_builder = get_default_builder()
     sql_builder.metadata_whitelist.append("position")
-    sql_storage = SqlStorage.from_conn(sqlite3.connect(":memory:"), index_name="pos", dialect="sqlite")
+    sql_storage = SqlStorage.from_conn(
+        sqlite3.connect(":memory:"),
+        index_name="pos",
+        dialect="sqlite",
+    )
     sql_idx = lunr(
         ref="id",
         fields=["id", "test"],
@@ -154,7 +170,11 @@ def test_sql_backend_parallel_positions_metadata_parity_with_single_worker():
 
     single_builder = get_default_builder()
     single_builder.metadata_whitelist.append("position")
-    single_storage = SqlStorage.from_conn(sqlite3.connect(":memory:"), index_name="single-pos", dialect="sqlite")
+    single_storage = SqlStorage.from_conn(
+        sqlite3.connect(":memory:"),
+        index_name="single-pos",
+        dialect="sqlite",
+    )
     single_idx = lunr(
         ref="id",
         fields=["id", "test"],
@@ -165,7 +185,11 @@ def test_sql_backend_parallel_positions_metadata_parity_with_single_worker():
 
     parallel_builder = get_default_builder()
     parallel_builder.metadata_whitelist.append("position")
-    parallel_storage = SqlStorage.from_conn(sqlite3.connect(":memory:"), index_name="parallel-pos", dialect="sqlite")
+    parallel_storage = SqlStorage.from_conn(
+        sqlite3.connect(":memory:"),
+        index_name="parallel-pos",
+        dialect="sqlite",
+    )
     parallel_idx = lunr(
         ref="id",
         fields=["id", "test"],
@@ -176,7 +200,68 @@ def test_sql_backend_parallel_positions_metadata_parity_with_single_worker():
         parallel_backend="thread",
     )
 
-    assert parallel_idx.inverted_index["hello"]["test"] == single_idx.inverted_index["hello"]["test"]
+    assert (
+        parallel_idx.inverted_index["hello"]["test"]
+        == single_idx.inverted_index["hello"]["test"]
+    )
     assert [result["ref"] for result in parallel_idx.search("hello")] == [
         result["ref"] for result in single_idx.search("hello")
     ]
+
+
+def test_sql_backend_parallel_process_backend_matches_thread_backend(documents):
+    process_storage = SqlStorage.from_conn(
+        sqlite3.connect(":memory:"),
+        index_name="process",
+        dialect="sqlite",
+    )
+    thread_storage = SqlStorage.from_conn(
+        sqlite3.connect(":memory:"),
+        index_name="thread",
+        dialect="sqlite",
+    )
+
+    process_idx = lunr(
+        ref="id",
+        fields=("title", "body"),
+        documents=documents,
+        storage=process_storage,
+        workers=2,
+        parallel_backend="process",
+    )
+    thread_idx = lunr(
+        ref="id",
+        fields=("title", "body"),
+        documents=documents,
+        storage=thread_storage,
+        workers=2,
+        parallel_backend="thread",
+    )
+
+    assert [result["ref"] for result in process_idx.search("green study")] == [
+        result["ref"] for result in thread_idx.search("green study")
+    ]
+
+
+def test_sql_backend_process_backend_falls_back_when_payload_is_unpicklable():
+    docs = [{"id": "1", "title": "hello", "body": "hello world"}]
+    storage = SqlStorage.from_conn(
+        sqlite3.connect(":memory:"),
+        index_name="fallback",
+        dialect="sqlite",
+    )
+
+    idx = lunr(
+        ref="id",
+        fields=[
+            "id",
+            {"field_name": "title", "extractor": lambda doc: doc["title"]},
+            "body",
+        ],
+        documents=docs,
+        storage=storage,
+        workers=2,
+        parallel_backend="process",
+    )
+
+    assert [result["ref"] for result in idx.search("hello")] == ["1"]
