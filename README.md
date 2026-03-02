@@ -119,3 +119,55 @@ an exception:
 
 For SQL-backed indexes, `Index.serialize()` is disabled. Use the database as the
 persistent representation.
+
+### Multiprocess indexing and search with SQL storage
+
+When using SQL storage, you can parallelize indexing with `parallel_backend="process"`
+and then fan out searches across multiple worker processes.
+
+```python
+import multiprocessing as mp
+
+from lunr import lunr
+from lunr.storage.sql import SqlStorage
+
+documents = [
+    {
+        "id": "a",
+        "title": "Mr. Green kills Colonel Mustard",
+        "body": "Mr. Green killed Colonel Mustard in the study with the candlestick.",
+    },
+    {
+        "id": "b",
+        "title": "Plumb waters plant",
+        "body": "Professor Plumb has a green plant in his study",
+    },
+]
+
+storage = SqlStorage.from_url("sqlite:///lunr_demo.db", index_name="docs")
+idx = lunr(
+    ref="id",
+    fields=("title", "body"),
+    documents=documents,
+    storage=storage,
+    workers=4,
+    parallel_backend="process",
+)
+
+
+def search_in_worker(query: str):
+    return query, [hit["ref"] for hit in idx.search(query)]
+
+
+if __name__ == "__main__":
+    # `fork` keeps the built SQL-backed index object available in child processes.
+    with mp.get_context("fork").Pool(processes=2) as pool:
+        results = dict(pool.map(search_in_worker, ["kill", "green study"]))
+
+    print(results)
+    # Example: {'kill': ['a'], 'green study': ['a', 'b']}
+```
+
+If payloads are not picklable for process-based indexing, Lunr emits a
+`RuntimeWarning` and falls back to the thread backend.
+
