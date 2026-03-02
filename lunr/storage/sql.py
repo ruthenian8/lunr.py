@@ -104,12 +104,25 @@ class SqlStorage:
 
     def ensure_schema(self) -> None:
         c = self.conn.cursor()
-        metadata_type = "TEXT" if self.dialect.name == "sqlite" else "JSON"
+
+        if self.dialect.name == "mysql":
+            key_text = "VARCHAR(191)"
+            metadata_type = "JSON"
+            magnitude_type = "DOUBLE"
+        elif self.dialect.name == "sqlite":
+            key_text = "TEXT"
+            metadata_type = "TEXT"
+            magnitude_type = "REAL"
+        else:
+            key_text = "TEXT"
+            metadata_type = "JSON"
+            magnitude_type = "REAL"
+
         c.execute(
             f"""
             CREATE TABLE IF NOT EXISTS lunr_terms (
-                index_name TEXT NOT NULL,
-                term TEXT NOT NULL,
+                index_name {key_text} NOT NULL,
+                term {key_text} NOT NULL,
                 term_index INTEGER NOT NULL,
                 PRIMARY KEY (index_name, term)
             )
@@ -118,10 +131,10 @@ class SqlStorage:
         c.execute(
             f"""
             CREATE TABLE IF NOT EXISTS lunr_postings (
-                index_name TEXT NOT NULL,
-                term TEXT NOT NULL,
-                field TEXT NOT NULL,
-                doc_ref TEXT NOT NULL,
+                index_name {key_text} NOT NULL,
+                term {key_text} NOT NULL,
+                field {key_text} NOT NULL,
+                doc_ref {key_text} NOT NULL,
                 metadata {metadata_type} NOT NULL,
                 PRIMARY KEY (index_name, term, field, doc_ref)
             )
@@ -130,12 +143,12 @@ class SqlStorage:
         c.execute(
             f"""
             CREATE TABLE IF NOT EXISTS lunr_field_vectors (
-                index_name TEXT NOT NULL,
-                field_ref TEXT NOT NULL,
-                field TEXT NOT NULL,
-                doc_ref TEXT NOT NULL,
+                index_name {key_text} NOT NULL,
+                field_ref {key_text} NOT NULL,
+                field {key_text} NOT NULL,
+                doc_ref {key_text} NOT NULL,
                 elements {metadata_type} NOT NULL,
-                magnitude REAL NOT NULL,
+                magnitude {magnitude_type} NOT NULL,
                 PRIMARY KEY (index_name, field_ref)
             )
             """
@@ -382,10 +395,16 @@ class SqlIndexReader:
                 .replace("_", "\\_")
             )
             like_pattern = escaped.replace("*", "%")
-            c.execute(
-                f"SELECT term FROM lunr_terms WHERE index_name = {self.storage.dialect.placeholder} AND term LIKE {self.storage.dialect.placeholder} ESCAPE '\\'",
-                (self.index_name, like_pattern),
-            )
+            if self.storage.dialect.name == "mysql":
+                c.execute(
+                    f"SELECT term FROM lunr_terms WHERE index_name = {self.storage.dialect.placeholder} AND term LIKE {self.storage.dialect.placeholder}",
+                    (self.index_name, like_pattern),
+                )
+            else:
+                c.execute(
+                    f"SELECT term FROM lunr_terms WHERE index_name = {self.storage.dialect.placeholder} AND term LIKE {self.storage.dialect.placeholder} ESCAPE '\\'",
+                    (self.index_name, like_pattern),
+                )
         else:
             c.execute(
                 f"SELECT term FROM lunr_terms WHERE index_name = {self.storage.dialect.placeholder} AND term = {self.storage.dialect.placeholder}",
