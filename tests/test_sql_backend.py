@@ -475,18 +475,6 @@ def test_sql_backend_cursors_are_closed_after_operations(documents):
         def __getattr__(self, name):
             return getattr(self._real, name)
 
-        def execute(self, *args, **kwargs):
-            return self._real.execute(*args, **kwargs)
-
-        def executemany(self, *args, **kwargs):
-            return self._real.executemany(*args, **kwargs)
-
-        def fetchone(self):
-            return self._real.fetchone()
-
-        def fetchall(self):
-            return self._real.fetchall()
-
         def close(self):
             self.closed = True
             self._real.close()
