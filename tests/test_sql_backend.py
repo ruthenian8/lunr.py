@@ -458,3 +458,72 @@ def test_connect_mysql_requires_driver(monkeypatch):
 
     with pytest.raises(ModuleNotFoundError, match="No MySQL Python driver"):
         _connect_mysql("127.0.0.1", "user", "pass", "db", 3306)
+
+
+def test_sql_backend_cursors_are_closed_after_operations(documents):
+    """Verify that database cursors created during index and search operations
+    are properly closed, preventing resource leaks."""
+    raw_conn = sqlite3.connect(":memory:")
+    cursors_created = []
+
+    class _TrackingCursor:
+        def __init__(self, real_cursor):
+            self._real = real_cursor
+            self.closed = False
+            cursors_created.append(self)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+        def execute(self, *args, **kwargs):
+            return self._real.execute(*args, **kwargs)
+
+        def executemany(self, *args, **kwargs):
+            return self._real.executemany(*args, **kwargs)
+
+        def fetchone(self):
+            return self._real.fetchone()
+
+        def fetchall(self):
+            return self._real.fetchall()
+
+        def close(self):
+            self.closed = True
+            self._real.close()
+
+    class _TrackingConnection:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        def cursor(self):
+            return _TrackingCursor(self._conn.cursor())
+
+        def commit(self):
+            self._conn.commit()
+
+    tracking_conn = _TrackingConnection(raw_conn)
+
+    storage = SqlStorage.from_conn(
+        tracking_conn, index_name="cursor_test", dialect="sqlite"
+    )
+    idx = _build_sql_index(documents, storage)
+
+    # Cursors created during indexing should all be closed
+    indexing_cursors = list(cursors_created)
+    assert len(indexing_cursors) > 0
+    assert all(c.closed for c in indexing_cursors), (
+        "Some cursors created during indexing were not closed"
+    )
+
+    cursors_created.clear()
+    _refs(idx, "green study")
+
+    # Cursors created during search should all be closed
+    search_cursors = list(cursors_created)
+    assert len(search_cursors) > 0
+    assert all(c.closed for c in search_cursors), (
+        "Some cursors created during search were not closed"
+    )

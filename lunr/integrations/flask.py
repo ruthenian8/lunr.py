@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any, Dict, Iterable
+from typing import Any, Dict, Iterable, Iterator
 
 from lunr import get_default_builder
 from lunr.index import Index
@@ -26,7 +26,7 @@ def _dialect_name_from_engine(engine: Any) -> str:
 
 
 @contextmanager
-def sql_lunr_index(db: Any, index_name: str) -> Index:
+def sql_lunr_index(db: Any, index_name: str) -> Iterator[Index]:
     """Yield an SQL-backed Lunr index using a fresh connection from ``db.engine``."""
     conn = db.engine.raw_connection()
     try:

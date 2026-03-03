@@ -104,118 +104,120 @@ class SqlStorage:
 
     def ensure_schema(self) -> None:
         c = self.conn.cursor()
+        try:
+            if self.dialect.name == "mysql":
+                key_text = "VARCHAR(191)"
+                metadata_type = "JSON"
+                magnitude_type = "DOUBLE"
+            elif self.dialect.name == "sqlite":
+                key_text = "TEXT"
+                metadata_type = "TEXT"
+                magnitude_type = "REAL"
+            else:
+                key_text = "TEXT"
+                metadata_type = "JSON"
+                magnitude_type = "REAL"
 
-        if self.dialect.name == "mysql":
-            key_text = "VARCHAR(191)"
-            metadata_type = "JSON"
-            magnitude_type = "DOUBLE"
-        elif self.dialect.name == "sqlite":
-            key_text = "TEXT"
-            metadata_type = "TEXT"
-            magnitude_type = "REAL"
-        else:
-            key_text = "TEXT"
-            metadata_type = "JSON"
-            magnitude_type = "REAL"
-
-        c.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS lunr_terms (
-                index_name {key_text} NOT NULL,
-                term {key_text} NOT NULL,
-                term_index INTEGER NOT NULL,
-                PRIMARY KEY (index_name, term)
-            )
-            """
-        )
-        c.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS lunr_postings (
-                index_name {key_text} NOT NULL,
-                term {key_text} NOT NULL,
-                field {key_text} NOT NULL,
-                doc_ref {key_text} NOT NULL,
-                metadata {metadata_type} NOT NULL,
-                PRIMARY KEY (index_name, term, field, doc_ref)
-            )
-            """
-        )
-        c.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS lunr_field_vectors (
-                index_name {key_text} NOT NULL,
-                field_ref {key_text} NOT NULL,
-                field {key_text} NOT NULL,
-                doc_ref {key_text} NOT NULL,
-                elements {metadata_type} NOT NULL,
-                magnitude {magnitude_type} NOT NULL,
-                PRIMARY KEY (index_name, field_ref)
-            )
-            """
-        )
-        c.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS lunr_doc_fields (
-                index_name {key_text} NOT NULL,
-                field_ref {key_text} NOT NULL,
-                field {key_text} NOT NULL,
-                doc_ref {key_text} NOT NULL,
-                length INTEGER NOT NULL,
-                PRIMARY KEY (index_name, field_ref)
-            )
-            """
-        )
-        c.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS lunr_term_frequencies (
-                index_name {key_text} NOT NULL,
-                field_ref {key_text} NOT NULL,
-                term {key_text} NOT NULL,
-                tf INTEGER NOT NULL,
-                PRIMARY KEY (index_name, field_ref, term)
-            )
-            """
-        )
-        if self.dialect.name == "mysql":
-            indexes = [
-                (
-                    "idx_lunr_postings_term_field",
-                    "lunr_postings",
-                    "(index_name, term, field)",
-                ),
-                ("idx_lunr_doc_fields_field", "lunr_doc_fields", "(index_name, field)"),
-                (
-                    "idx_lunr_tf_field_ref",
-                    "lunr_term_frequencies",
-                    "(index_name, field_ref)",
-                ),
-            ]
-            for index_name, table_name, columns in indexes:
-                c.execute(
-                    """
-                    SELECT COUNT(1)
-                    FROM information_schema.statistics
-                    WHERE table_schema = DATABASE()
-                      AND table_name = %s
-                      AND index_name = %s
-                    """,
-                    (table_name, index_name),
+            c.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS lunr_terms (
+                    index_name {key_text} NOT NULL,
+                    term {key_text} NOT NULL,
+                    term_index INTEGER NOT NULL,
+                    PRIMARY KEY (index_name, term)
                 )
-                if c.fetchone()[0] == 0:
-                    c.execute(f"CREATE INDEX {index_name} ON {table_name} {columns}")
-        else:
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_lunr_postings_term_field ON "
-                "lunr_postings (index_name, term, field)"
+                """
             )
             c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_lunr_doc_fields_field ON "
-                "lunr_doc_fields (index_name, field)"
+                f"""
+                CREATE TABLE IF NOT EXISTS lunr_postings (
+                    index_name {key_text} NOT NULL,
+                    term {key_text} NOT NULL,
+                    field {key_text} NOT NULL,
+                    doc_ref {key_text} NOT NULL,
+                    metadata {metadata_type} NOT NULL,
+                    PRIMARY KEY (index_name, term, field, doc_ref)
+                )
+                """
             )
             c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_lunr_tf_field_ref ON "
-                "lunr_term_frequencies (index_name, field_ref)"
+                f"""
+                CREATE TABLE IF NOT EXISTS lunr_field_vectors (
+                    index_name {key_text} NOT NULL,
+                    field_ref {key_text} NOT NULL,
+                    field {key_text} NOT NULL,
+                    doc_ref {key_text} NOT NULL,
+                    elements {metadata_type} NOT NULL,
+                    magnitude {magnitude_type} NOT NULL,
+                    PRIMARY KEY (index_name, field_ref)
+                )
+                """
             )
+            c.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS lunr_doc_fields (
+                    index_name {key_text} NOT NULL,
+                    field_ref {key_text} NOT NULL,
+                    field {key_text} NOT NULL,
+                    doc_ref {key_text} NOT NULL,
+                    length INTEGER NOT NULL,
+                    PRIMARY KEY (index_name, field_ref)
+                )
+                """
+            )
+            c.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS lunr_term_frequencies (
+                    index_name {key_text} NOT NULL,
+                    field_ref {key_text} NOT NULL,
+                    term {key_text} NOT NULL,
+                    tf INTEGER NOT NULL,
+                    PRIMARY KEY (index_name, field_ref, term)
+                )
+                """
+            )
+            if self.dialect.name == "mysql":
+                indexes = [
+                    (
+                        "idx_lunr_postings_term_field",
+                        "lunr_postings",
+                        "(index_name, term, field)",
+                    ),
+                    ("idx_lunr_doc_fields_field", "lunr_doc_fields", "(index_name, field)"),
+                    (
+                        "idx_lunr_tf_field_ref",
+                        "lunr_term_frequencies",
+                        "(index_name, field_ref)",
+                    ),
+                ]
+                for index_name, table_name, columns in indexes:
+                    c.execute(
+                        """
+                        SELECT COUNT(1)
+                        FROM information_schema.statistics
+                        WHERE table_schema = DATABASE()
+                          AND table_name = %s
+                          AND index_name = %s
+                        """,
+                        (table_name, index_name),
+                    )
+                    if c.fetchone()[0] == 0:
+                        c.execute(f"CREATE INDEX {index_name} ON {table_name} {columns}")
+            else:
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lunr_postings_term_field ON "
+                    "lunr_postings (index_name, term, field)"
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lunr_doc_fields_field ON "
+                    "lunr_doc_fields (index_name, field)"
+                )
+                c.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lunr_tf_field_ref ON "
+                    "lunr_term_frequencies (index_name, field_ref)"
+                )
+        finally:
+            c.close()
         self.conn.commit()
 
     def writer(self) -> "SqlIndexWriter":
@@ -240,33 +242,36 @@ class SqlIndexWriter:
         key_columns: List[str],
     ) -> None:
         c = self.conn.cursor()
-        placeholders = ", ".join([self.storage.dialect.placeholder] * len(columns))
-        cols = ", ".join(columns)
-        if self.storage.dialect.upsert == "replace":
-            c.execute(
-                f"INSERT OR REPLACE INTO {table} ({cols}) VALUES ({placeholders})",
-                values,
-            )
-            return
+        try:
+            placeholders = ", ".join([self.storage.dialect.placeholder] * len(columns))
+            cols = ", ".join(columns)
+            if self.storage.dialect.upsert == "replace":
+                c.execute(
+                    f"INSERT OR REPLACE INTO {table} ({cols}) VALUES ({placeholders})",
+                    values,
+                )
+                return
 
-        if self.storage.dialect.upsert == "conflict":
-            non_keys = [col for col in columns if col not in key_columns]
-            set_clause = ", ".join([f"{col}=EXCLUDED.{col}" for col in non_keys])
+            if self.storage.dialect.upsert == "conflict":
+                non_keys = [col for col in columns if col not in key_columns]
+                set_clause = ", ".join([f"{col}=EXCLUDED.{col}" for col in non_keys])
+                c.execute(
+                    f"INSERT INTO {table} ({cols}) VALUES ({placeholders}) "
+                    f"ON CONFLICT ({', '.join(key_columns)}) DO UPDATE SET {set_clause}",
+                    values,
+                )
+                return
+
+            updates = ", ".join(
+                [f"{col}=VALUES({col})" for col in columns if col not in key_columns]
+            )
             c.execute(
                 f"INSERT INTO {table} ({cols}) VALUES ({placeholders}) "
-                f"ON CONFLICT ({', '.join(key_columns)}) DO UPDATE SET {set_clause}",
+                f"ON DUPLICATE KEY UPDATE {updates}",
                 values,
             )
-            return
-
-        updates = ", ".join(
-            [f"{col}=VALUES({col})" for col in columns if col not in key_columns]
-        )
-        c.execute(
-            f"INSERT INTO {table} ({cols}) VALUES ({placeholders}) "
-            f"ON DUPLICATE KEY UPDATE {updates}",
-            values,
-        )
+        finally:
+            c.close()
 
     def upsert_term(self, term: str, term_index: int) -> None:
         self._upsert(
@@ -281,33 +286,36 @@ class SqlIndexWriter:
             return
 
         c = self.conn.cursor()
-        placeholders = ", ".join([self.storage.dialect.placeholder] * 3)
-        values = [(self.index_name, term, term_index) for term, term_index in rows]
+        try:
+            placeholders = ", ".join([self.storage.dialect.placeholder] * 3)
+            values = [(self.index_name, term, term_index) for term, term_index in rows]
 
-        if self.storage.dialect.upsert == "replace":
-            c.executemany(
-                "INSERT OR REPLACE INTO lunr_terms "
-                f"(index_name, term, term_index) VALUES ({placeholders})",
-                values,
-            )
-            return
+            if self.storage.dialect.upsert == "replace":
+                c.executemany(
+                    "INSERT OR REPLACE INTO lunr_terms "
+                    f"(index_name, term, term_index) VALUES ({placeholders})",
+                    values,
+                )
+                return
 
-        if self.storage.dialect.upsert == "conflict":
+            if self.storage.dialect.upsert == "conflict":
+                c.executemany(
+                    "INSERT INTO lunr_terms (index_name, term, term_index) "
+                    f"VALUES ({placeholders}) "
+                    "ON CONFLICT (index_name, term) DO UPDATE "
+                    "SET term_index=EXCLUDED.term_index",
+                    values,
+                )
+                return
+
             c.executemany(
                 "INSERT INTO lunr_terms (index_name, term, term_index) "
                 f"VALUES ({placeholders}) "
-                "ON CONFLICT (index_name, term) DO UPDATE "
-                "SET term_index=EXCLUDED.term_index",
+                "ON DUPLICATE KEY UPDATE term_index=VALUES(term_index)",
                 values,
             )
-            return
-
-        c.executemany(
-            "INSERT INTO lunr_terms (index_name, term, term_index) "
-            f"VALUES ({placeholders}) "
-            "ON DUPLICATE KEY UPDATE term_index=VALUES(term_index)",
-            values,
-        )
+        finally:
+            c.close()
 
     def upsert_posting(
         self, term: str, field: str, doc_ref: str, metadata: Dict[str, List[Any]]
@@ -332,42 +340,45 @@ class SqlIndexWriter:
             return
 
         c = self.conn.cursor()
-        placeholders = ", ".join([self.storage.dialect.placeholder] * 5)
-        values = [
-            (
-                self.index_name,
-                term,
-                field,
-                doc_ref,
-                json.dumps(metadata, sort_keys=True),
-            )
-            for term, field, doc_ref, metadata in rows
-        ]
+        try:
+            placeholders = ", ".join([self.storage.dialect.placeholder] * 5)
+            values = [
+                (
+                    self.index_name,
+                    term,
+                    field,
+                    doc_ref,
+                    json.dumps(metadata, sort_keys=True),
+                )
+                for term, field, doc_ref, metadata in rows
+            ]
 
-        if self.storage.dialect.upsert == "replace":
-            c.executemany(
-                "INSERT OR REPLACE INTO lunr_postings "
-                f"(index_name, term, field, doc_ref, metadata) VALUES ({placeholders})",
-                values,
-            )
-            return
+            if self.storage.dialect.upsert == "replace":
+                c.executemany(
+                    "INSERT OR REPLACE INTO lunr_postings "
+                    f"(index_name, term, field, doc_ref, metadata) VALUES ({placeholders})",
+                    values,
+                )
+                return
 
-        if self.storage.dialect.upsert == "conflict":
+            if self.storage.dialect.upsert == "conflict":
+                c.executemany(
+                    "INSERT INTO lunr_postings (index_name, term, field, doc_ref, metadata) "
+                    f"VALUES ({placeholders}) "
+                    "ON CONFLICT (index_name, term, field, doc_ref) DO UPDATE "
+                    "SET metadata=EXCLUDED.metadata",
+                    values,
+                )
+                return
+
             c.executemany(
                 "INSERT INTO lunr_postings (index_name, term, field, doc_ref, metadata) "
                 f"VALUES ({placeholders}) "
-                "ON CONFLICT (index_name, term, field, doc_ref) DO UPDATE "
-                "SET metadata=EXCLUDED.metadata",
+                "ON DUPLICATE KEY UPDATE metadata=VALUES(metadata)",
                 values,
             )
-            return
-
-        c.executemany(
-            "INSERT INTO lunr_postings (index_name, term, field, doc_ref, metadata) "
-            f"VALUES ({placeholders}) "
-            "ON DUPLICATE KEY UPDATE metadata=VALUES(metadata)",
-            values,
-        )
+        finally:
+            c.close()
 
     def upsert_field_vector(
         self, field_ref: str, field: str, doc_ref: str, vector: Vector
@@ -393,48 +404,51 @@ class SqlIndexWriter:
             return
 
         c = self.conn.cursor()
-        placeholders = ", ".join([self.storage.dialect.placeholder] * 6)
-        values = [
-            (
-                self.index_name,
-                field_ref,
-                field,
-                doc_ref,
-                json.dumps(vector.serialize()),
-                vector.magnitude,
-            )
-            for field_ref, field, doc_ref, vector in rows
-        ]
+        try:
+            placeholders = ", ".join([self.storage.dialect.placeholder] * 6)
+            values = [
+                (
+                    self.index_name,
+                    field_ref,
+                    field,
+                    doc_ref,
+                    json.dumps(vector.serialize()),
+                    vector.magnitude,
+                )
+                for field_ref, field, doc_ref, vector in rows
+            ]
 
-        if self.storage.dialect.upsert == "replace":
-            c.executemany(
-                "INSERT OR REPLACE INTO lunr_field_vectors "
-                f"(index_name, field_ref, field, doc_ref, elements, magnitude) "
-                f"VALUES ({placeholders})",
-                values,
-            )
-            return
+            if self.storage.dialect.upsert == "replace":
+                c.executemany(
+                    "INSERT OR REPLACE INTO lunr_field_vectors "
+                    f"(index_name, field_ref, field, doc_ref, elements, magnitude) "
+                    f"VALUES ({placeholders})",
+                    values,
+                )
+                return
 
-        if self.storage.dialect.upsert == "conflict":
+            if self.storage.dialect.upsert == "conflict":
+                c.executemany(
+                    "INSERT INTO lunr_field_vectors "
+                    "(index_name, field_ref, field, doc_ref, elements, magnitude) "
+                    f"VALUES ({placeholders}) "
+                    "ON CONFLICT (index_name, field_ref) DO UPDATE "
+                    "SET field=EXCLUDED.field, doc_ref=EXCLUDED.doc_ref, "
+                    "elements=EXCLUDED.elements, magnitude=EXCLUDED.magnitude",
+                    values,
+                )
+                return
+
             c.executemany(
                 "INSERT INTO lunr_field_vectors "
                 "(index_name, field_ref, field, doc_ref, elements, magnitude) "
                 f"VALUES ({placeholders}) "
-                "ON CONFLICT (index_name, field_ref) DO UPDATE "
-                "SET field=EXCLUDED.field, doc_ref=EXCLUDED.doc_ref, "
-                "elements=EXCLUDED.elements, magnitude=EXCLUDED.magnitude",
+                "ON DUPLICATE KEY UPDATE field=VALUES(field), doc_ref=VALUES(doc_ref), "
+                "elements=VALUES(elements), magnitude=VALUES(magnitude)",
                 values,
             )
-            return
-
-        c.executemany(
-            "INSERT INTO lunr_field_vectors "
-            "(index_name, field_ref, field, doc_ref, elements, magnitude) "
-            f"VALUES ({placeholders}) "
-            "ON DUPLICATE KEY UPDATE field=VALUES(field), doc_ref=VALUES(doc_ref), "
-            "elements=VALUES(elements), magnitude=VALUES(magnitude)",
-            values,
-        )
+        finally:
+            c.close()
 
     def commit(self) -> None:
         self.conn.commit()
@@ -444,77 +458,83 @@ class SqlIndexWriter:
             return
 
         c = self.conn.cursor()
-        placeholders = ", ".join([self.storage.dialect.placeholder] * 5)
-        values = [
-            (self.index_name, field_ref, field, doc_ref, length)
-            for field_ref, field, doc_ref, length in rows
-        ]
+        try:
+            placeholders = ", ".join([self.storage.dialect.placeholder] * 5)
+            values = [
+                (self.index_name, field_ref, field, doc_ref, length)
+                for field_ref, field, doc_ref, length in rows
+            ]
 
-        if self.storage.dialect.upsert == "replace":
-            c.executemany(
-                "INSERT OR REPLACE INTO lunr_doc_fields "
-                f"(index_name, field_ref, field, doc_ref, length) VALUES ({placeholders})",
-                values,
-            )
-            return
+            if self.storage.dialect.upsert == "replace":
+                c.executemany(
+                    "INSERT OR REPLACE INTO lunr_doc_fields "
+                    f"(index_name, field_ref, field, doc_ref, length) VALUES ({placeholders})",
+                    values,
+                )
+                return
 
-        if self.storage.dialect.upsert == "conflict":
+            if self.storage.dialect.upsert == "conflict":
+                c.executemany(
+                    "INSERT INTO lunr_doc_fields "
+                    "(index_name, field_ref, field, doc_ref, length) "
+                    f"VALUES ({placeholders}) "
+                    "ON CONFLICT (index_name, field_ref) DO UPDATE "
+                    "SET field=EXCLUDED.field, doc_ref=EXCLUDED.doc_ref, "
+                    "length=EXCLUDED.length",
+                    values,
+                )
+                return
+
             c.executemany(
                 "INSERT INTO lunr_doc_fields "
                 "(index_name, field_ref, field, doc_ref, length) "
                 f"VALUES ({placeholders}) "
-                "ON CONFLICT (index_name, field_ref) DO UPDATE "
-                "SET field=EXCLUDED.field, doc_ref=EXCLUDED.doc_ref, "
-                "length=EXCLUDED.length",
+                "ON DUPLICATE KEY UPDATE field=VALUES(field), doc_ref=VALUES(doc_ref), "
+                "length=VALUES(length)",
                 values,
             )
-            return
-
-        c.executemany(
-            "INSERT INTO lunr_doc_fields "
-            "(index_name, field_ref, field, doc_ref, length) "
-            f"VALUES ({placeholders}) "
-            "ON DUPLICATE KEY UPDATE field=VALUES(field), doc_ref=VALUES(doc_ref), "
-            "length=VALUES(length)",
-            values,
-        )
+        finally:
+            c.close()
 
     def upsert_term_frequencies_bulk(self, rows: List[Tuple[str, str, int]]) -> None:
         if not rows:
             return
 
         c = self.conn.cursor()
-        placeholders = ", ".join([self.storage.dialect.placeholder] * 4)
-        values = [
-            (self.index_name, field_ref, term, tf) for field_ref, term, tf in rows
-        ]
+        try:
+            placeholders = ", ".join([self.storage.dialect.placeholder] * 4)
+            values = [
+                (self.index_name, field_ref, term, tf) for field_ref, term, tf in rows
+            ]
 
-        if self.storage.dialect.upsert == "replace":
-            c.executemany(
-                "INSERT OR REPLACE INTO lunr_term_frequencies "
-                f"(index_name, field_ref, term, tf) VALUES ({placeholders})",
-                values,
-            )
-            return
+            if self.storage.dialect.upsert == "replace":
+                c.executemany(
+                    "INSERT OR REPLACE INTO lunr_term_frequencies "
+                    f"(index_name, field_ref, term, tf) VALUES ({placeholders})",
+                    values,
+                )
+                return
 
-        if self.storage.dialect.upsert == "conflict":
+            if self.storage.dialect.upsert == "conflict":
+                c.executemany(
+                    "INSERT INTO lunr_term_frequencies "
+                    "(index_name, field_ref, term, tf) "
+                    f"VALUES ({placeholders}) "
+                    "ON CONFLICT (index_name, field_ref, term) DO UPDATE "
+                    "SET tf=EXCLUDED.tf",
+                    values,
+                )
+                return
+
             c.executemany(
                 "INSERT INTO lunr_term_frequencies "
                 "(index_name, field_ref, term, tf) "
                 f"VALUES ({placeholders}) "
-                "ON CONFLICT (index_name, field_ref, term) DO UPDATE "
-                "SET tf=EXCLUDED.tf",
+                "ON DUPLICATE KEY UPDATE tf=VALUES(tf)",
                 values,
             )
-            return
-
-        c.executemany(
-            "INSERT INTO lunr_term_frequencies "
-            "(index_name, field_ref, term, tf) "
-            f"VALUES ({placeholders}) "
-            "ON DUPLICATE KEY UPDATE tf=VALUES(tf)",
-            values,
-        )
+        finally:
+            c.close()
 
 
 class SqlIndexReader:
@@ -525,90 +545,111 @@ class SqlIndexReader:
 
     def expand_terms(self, term_pattern: str) -> List[str]:
         c = self.conn.cursor()
-        if "*" in term_pattern:
-            escaped = (
-                term_pattern.replace("\\", "\\\\")
-                .replace("%", "\\%")
-                .replace("_", "\\_")
-            )
-            like_pattern = escaped.replace("*", "%")
-            if self.storage.dialect.name == "mysql":
-                c.execute(
-                    f"SELECT term FROM lunr_terms WHERE index_name = {self.storage.dialect.placeholder} AND term LIKE {self.storage.dialect.placeholder}",
-                    (self.index_name, like_pattern),
+        try:
+            if "*" in term_pattern:
+                escaped = (
+                    term_pattern.replace("\\", "\\\\")
+                    .replace("%", "\\%")
+                    .replace("_", "\\_")
                 )
+                like_pattern = escaped.replace("*", "%")
+                if self.storage.dialect.name == "mysql":
+                    c.execute(
+                        f"SELECT term FROM lunr_terms WHERE index_name = {self.storage.dialect.placeholder} AND term LIKE {self.storage.dialect.placeholder}",
+                        (self.index_name, like_pattern),
+                    )
+                else:
+                    c.execute(
+                        f"SELECT term FROM lunr_terms WHERE index_name = {self.storage.dialect.placeholder} AND term LIKE {self.storage.dialect.placeholder} ESCAPE '\\'",
+                        (self.index_name, like_pattern),
+                    )
             else:
                 c.execute(
-                    f"SELECT term FROM lunr_terms WHERE index_name = {self.storage.dialect.placeholder} AND term LIKE {self.storage.dialect.placeholder} ESCAPE '\\'",
-                    (self.index_name, like_pattern),
+                    f"SELECT term FROM lunr_terms WHERE index_name = {self.storage.dialect.placeholder} AND term = {self.storage.dialect.placeholder}",
+                    (self.index_name, term_pattern),
                 )
-        else:
-            c.execute(
-                f"SELECT term FROM lunr_terms WHERE index_name = {self.storage.dialect.placeholder} AND term = {self.storage.dialect.placeholder}",
-                (self.index_name, term_pattern),
-            )
-        return [term for (term,) in c.fetchall()]
+            return [term for (term,) in c.fetchall()]
+        finally:
+            c.close()
 
     def get_posting(self, term: str) -> Dict[str, Any]:
         c = self.conn.cursor()
-        c.execute(
-            f"SELECT term_index FROM lunr_terms WHERE index_name = {self.storage.dialect.placeholder} AND term = {self.storage.dialect.placeholder}",
-            (self.index_name, term),
-        )
-        row = c.fetchone()
-        if row is None:
-            return {"_index": -1}
+        try:
+            c.execute(
+                f"SELECT term_index FROM lunr_terms WHERE index_name = {self.storage.dialect.placeholder} AND term = {self.storage.dialect.placeholder}",
+                (self.index_name, term),
+            )
+            row = c.fetchone()
+            if row is None:
+                return {"_index": -1}
 
-        posting: Dict[str, Any] = {"_index": row[0]}
-        c.execute(
-            f"SELECT field, doc_ref, metadata FROM lunr_postings WHERE index_name = {self.storage.dialect.placeholder} AND term = {self.storage.dialect.placeholder}",
-            (self.index_name, term),
-        )
-        for field, doc_ref, metadata_json in c.fetchall():
-            posting.setdefault(field, {})[doc_ref] = json.loads(metadata_json)
-        return posting
+            posting: Dict[str, Any] = {"_index": row[0]}
+            c.execute(
+                f"SELECT field, doc_ref, metadata FROM lunr_postings WHERE index_name = {self.storage.dialect.placeholder} AND term = {self.storage.dialect.placeholder}",
+                (self.index_name, term),
+            )
+            for field, doc_ref, metadata_json in c.fetchall():
+                posting.setdefault(field, {})[doc_ref] = json.loads(metadata_json)
+            return posting
+        finally:
+            c.close()
 
     def get_field_vector(self, field_ref: str) -> Vector:
         c = self.conn.cursor()
-        c.execute(
-            f"SELECT elements, magnitude FROM lunr_field_vectors WHERE index_name = {self.storage.dialect.placeholder} AND field_ref = {self.storage.dialect.placeholder}",
-            (self.index_name, field_ref),
-        )
-        row = c.fetchone()
-        if row is None:
-            return Vector()
-        vector = Vector(json.loads(row[0]))
-        vector._magnitude = row[1]
-        return vector
+        try:
+            c.execute(
+                f"SELECT elements, magnitude FROM lunr_field_vectors WHERE index_name = {self.storage.dialect.placeholder} AND field_ref = {self.storage.dialect.placeholder}",
+                (self.index_name, field_ref),
+            )
+            row = c.fetchone()
+            if row is None:
+                return Vector()
+            vector = Vector(json.loads(row[0]))
+            vector._magnitude = row[1]
+            return vector
+        finally:
+            c.close()
 
     def iter_all_field_refs(self) -> Iterator[str]:
         c = self.conn.cursor()
-        c.execute(
-            f"SELECT field_ref FROM lunr_field_vectors WHERE index_name = {self.storage.dialect.placeholder}",
-            (self.index_name,),
-        )
-        for (field_ref,) in c.fetchall():
+        try:
+            c.execute(
+                f"SELECT field_ref FROM lunr_field_vectors WHERE index_name = {self.storage.dialect.placeholder}",
+                (self.index_name,),
+            )
+            rows = c.fetchall()
+        finally:
+            c.close()
+        for (field_ref,) in rows:
             yield field_ref
 
     def iter_doc_fields(self) -> Iterator[Tuple[str, str, str, int]]:
         c = self.conn.cursor()
-        c.execute(
-            f"SELECT field_ref, field, doc_ref, length FROM lunr_doc_fields "
-            f"WHERE index_name = {self.storage.dialect.placeholder}",
-            (self.index_name,),
-        )
-        for row in c.fetchall():
+        try:
+            c.execute(
+                f"SELECT field_ref, field, doc_ref, length FROM lunr_doc_fields "
+                f"WHERE index_name = {self.storage.dialect.placeholder}",
+                (self.index_name,),
+            )
+            rows = c.fetchall()
+        finally:
+            c.close()
+        for row in rows:
             yield row
 
     def iter_term_frequencies(self) -> Iterator[Tuple[str, str, int]]:
         c = self.conn.cursor()
-        c.execute(
-            f"SELECT field_ref, term, tf FROM lunr_term_frequencies "
-            f"WHERE index_name = {self.storage.dialect.placeholder} "
-            "ORDER BY field_ref",
-            (self.index_name,),
-        )
-        for row in c.fetchall():
+        try:
+            c.execute(
+                f"SELECT field_ref, term, tf FROM lunr_term_frequencies "
+                f"WHERE index_name = {self.storage.dialect.placeholder} "
+                "ORDER BY field_ref",
+                (self.index_name,),
+            )
+            rows = c.fetchall()
+        finally:
+            c.close()
+        for row in rows:
             yield row
 
 
