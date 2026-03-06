@@ -42,8 +42,12 @@ Changelog = "https://github.com/yeraydiazdiaz/lunr.py/blob/master/CHANGELOG.md"
 languages = [
     "nltk"
 ]
+russian = [
+    "pymorphy3",
+    "pymorphy3-dicts-ru",
+]
 tests = [
-    "lunr[languages]",
+    "lunr[languages,russian]",
     "pytest",
     "pytest-timeout",
     "tox",

@@ -89,9 +89,14 @@ def get_default_builder(languages=None):
 
     Useful as a starting point to tweak the defaults.
     """
-    if languages is not None and lang.LANGUAGE_SUPPORT:
+    if languages is not None:
         if isinstance(languages, str):
             languages = [languages]
+
+        if not lang.LANGUAGE_SUPPORT:
+            raise RuntimeError(
+                "Language support requires NLTK. Install with: pip install lunr[languages]"
+            )
 
         unsupported_languages = set(languages) - set(lang.SUPPORTED_LANGUAGES)
         if unsupported_languages:
@@ -102,6 +107,8 @@ def get_default_builder(languages=None):
                     ", ".join(lang.SUPPORTED_LANGUAGES.keys()),
                 )
             )
+        if "ru" in languages:
+            lang.ru.get_morph_analyzer()
         builder = lang.get_nltk_builder(languages)
     else:
         builder = Builder()
