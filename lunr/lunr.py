@@ -93,12 +93,17 @@ def get_default_builder(languages=None):
         if isinstance(languages, str):
             languages = [languages]
 
-        if not lang.LANGUAGE_SUPPORT:
+        requested_languages = set(languages)
+        nltk_independent_languages = {"ru"}
+
+        if not lang.LANGUAGE_SUPPORT and not requested_languages.issubset(
+            nltk_independent_languages
+        ):
             raise RuntimeError(
                 "Language support requires NLTK. Install with: pip install lunr[languages]"
             )
 
-        unsupported_languages = set(languages) - set(lang.SUPPORTED_LANGUAGES)
+        unsupported_languages = requested_languages - set(lang.SUPPORTED_LANGUAGES)
         if unsupported_languages:
             raise RuntimeError(
                 "The specified languages {} are not supported, "

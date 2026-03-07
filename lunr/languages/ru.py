@@ -5,12 +5,14 @@ from importlib import resources
 
 from lunr.pipeline import Pipeline
 
-_PUNCTUATION_RE = re.compile(r"^[^\w\d]+|[^\w\d]+$")
+_PUNCTUATION_RE = re.compile(r"^\W+|\W+$")
 _CYRILLIC_RE = re.compile(r"[а-яё]")
 
-RUSSIAN_WORD_CHARACTERS = {chr(code) for code in range(ord("а"), ord("я") + 1)} | {
-    "ё"
-}
+RUSSIAN_WORD_CHARACTERS = (
+    {chr(code) for code in range(ord("а"), ord("я") + 1)}
+    | {chr(code) for code in range(ord("А"), ord("Я") + 1)}
+    | {"ё", "Ё"}
+)
 
 
 @lru_cache(maxsize=1)

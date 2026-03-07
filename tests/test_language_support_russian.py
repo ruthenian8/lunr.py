@@ -87,8 +87,11 @@ def test_ru_missing_dependency_error(monkeypatch):
 
     monkeypatch.setattr("builtins.__import__", fake_import)
 
-    with pytest.raises(RuntimeError, match="pymorphy3 and pymorphy3-dicts-ru"):
-        get_default_builder(["ru"])
+    try:
+        with pytest.raises(RuntimeError, match="pymorphy3 and pymorphy3-dicts-ru"):
+            get_default_builder(["ru"])
+    finally:
+        ru.get_morph_analyzer.cache_clear()
 
 
 @pytest.mark.skipif(not HAS_PYMORPHY3, reason="pymorphy3 is not installed")
