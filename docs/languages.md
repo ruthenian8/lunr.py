@@ -84,6 +84,12 @@ Russian (`ru`) uses a dedicated plugin in the same `languages` pipeline system.
 Install dependencies with:
 
 ```bash
+pip install lunr[russian]
+```
+
+If you are combining Russian with NLTK-backed languages, install both extras:
+
+```bash
 pip install lunr[languages,russian]
 ```
 

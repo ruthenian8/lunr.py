@@ -30,8 +30,10 @@ def lunr(
         documents (list): The list of dictonaries representing the documents
             to index. Optionally a 2-tuple of dicts, the first one being
             the document and the second the associated attributes to it.
-        languages (str or list, optional): The languages to use if using
-            NLTK language support, ignored if NLTK is not available.
+        languages (str or list, optional): The languages to use for the
+            language pipeline. If NLTK is unavailable, only NLTK-independent
+            languages (currently ``"ru"``) are allowed; requesting other
+            languages raises ``RuntimeError``.
         builder (Builder, optional): A pre-configured builder instance.
         storage (SqlStorage, optional): Optional SQL storage backend.
         workers (int, optional): Number of workers to use for SQL-backed

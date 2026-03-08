@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 
 from lunr import get_default_builder, lunr
@@ -86,6 +88,7 @@ def test_ru_missing_dependency_error(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr("builtins.__import__", fake_import)
+    monkeypatch.delitem(sys.modules, "pymorphy3", raising=False)
 
     try:
         with pytest.raises(RuntimeError, match="pymorphy3 and pymorphy3-dicts-ru"):

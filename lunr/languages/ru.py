@@ -1,7 +1,11 @@
 import re
 import unicodedata
 from functools import lru_cache
-from importlib import resources
+try:
+    from importlib import resources
+except ImportError:  # pragma: no cover
+    import importlib_resources as resources
+
 
 from lunr.pipeline import Pipeline
 
@@ -17,12 +21,12 @@ RUSSIAN_WORD_CHARACTERS = (
 
 @lru_cache(maxsize=1)
 def get_russian_stop_words():
-    data_path = resources.files("lunr.languages.data").joinpath("ru_stopwords.txt")
     stopwords = set()
-    for line in data_path.read_text(encoding="utf-8").splitlines():
-        normalized = clean_russian_token(line)
-        if normalized:
-            stopwords.add(normalized)
+    with resources.open_text("lunr.languages.data", "ru_stopwords.txt", encoding="utf-8") as source:
+        for line in source:
+            normalized = clean_russian_token(line)
+            if normalized:
+                stopwords.add(normalized)
     return frozenset(stopwords)
 
 
