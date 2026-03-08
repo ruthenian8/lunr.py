@@ -43,7 +43,7 @@ languages = [
     "nltk"
 ]
 russian = [
-    "pymorphy3",
+    "pymorphy3[fast]",
     "pymorphy3-dicts-ru",
 ]
 tests = [
