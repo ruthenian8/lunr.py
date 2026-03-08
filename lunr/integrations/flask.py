@@ -26,8 +26,19 @@ def _dialect_name_from_engine(engine: Any) -> str:
 
 
 @contextmanager
-def sql_lunr_index(db: Any, index_name: str) -> Iterator[Index]:
-    """Yield an SQL-backed Lunr index using a fresh connection from ``db.engine``."""
+def sql_lunr_index(
+    db: Any, index_name: str, *, languages: "str | list[str] | None" = None
+) -> Iterator[Index]:
+    """Yield an SQL-backed Lunr index using a fresh connection from ``db.engine``.
+
+    Args:
+        db: A Flask-SQLAlchemy ``db`` instance (or any object whose ``engine``
+            attribute exposes ``raw_connection()``).
+        index_name: Logical name of the index inside the database.
+        languages: Optional language(s) passed to
+            :func:`~lunr.get_default_builder` so that the search pipeline
+            uses the correct language-specific stemmer / stop-word filter.
+    """
     conn = db.engine.raw_connection()
     try:
         dialect = _dialect_name_from_engine(db.engine)
@@ -59,7 +70,7 @@ def sql_lunr_index(db: Any, index_name: str) -> Iterator[Index]:
             field_vectors=SqlFieldVectorsProxy(reader),
             token_set=None,
             fields=fields,
-            pipeline=get_default_builder().search_pipeline,
+            pipeline=get_default_builder(languages).search_pipeline,
             storage_reader=reader,
         )
         yield idx
@@ -80,8 +91,27 @@ def build_or_rebuild_index(
     metadata_whitelist: Iterable[str] | None = None,
     workers: int | None = None,
     parallel_backend: str | None = None,
+    languages: "str | list[str] | None" = None,
 ) -> None:
-    """Build or rebuild a SQL-backed Lunr index from ``documents``."""
+    """Build or rebuild a SQL-backed Lunr index from ``documents``.
+
+    Args:
+        db: A Flask-SQLAlchemy ``db`` instance (or any object whose ``engine``
+            attribute exposes ``raw_connection()``).
+        index_name: Logical name of the index inside the database.
+        documents: Iterable of document dicts to index.
+        doc_batch_size: Documents per batch when flushing to SQL.
+        row_batch_size: Rows per batch when flushing to SQL.
+        commit_docs: Commit interval (number of documents).
+        ref_field: Document key used as the reference field.
+        text_fields: Fields to index; defaults to ``["title", "body"]``.
+        metadata_whitelist: Additional metadata keys to store.
+        workers: Number of parallel workers (requires SQL storage).
+        parallel_backend: ``"thread"`` or ``"process"``.
+        languages: Optional language(s) passed to
+            :func:`~lunr.get_default_builder` so that the builder uses
+            language-specific stemming / stop-word pipelines.
+    """
     fields = list(text_fields) if text_fields is not None else ["title", "body"]
 
     conn = db.engine.raw_connection()
@@ -108,7 +138,7 @@ def build_or_rebuild_index(
         finally:
             cursor.close()
 
-        builder = get_default_builder()
+        builder = get_default_builder(languages)
         builder.ref(ref_field)
         for field in fields:
             builder.field(field)
@@ -134,8 +164,15 @@ def build_or_rebuild_index(
         conn.close()
 
 
-def create_app() -> "flask.Flask":  # type: ignore[name-defined]
-    """Create a minimal Flask app exposing a ``/search`` endpoint."""
+def create_app(languages: "str | list[str] | None" = None) -> "flask.Flask":  # type: ignore[name-defined]
+    """Create a minimal Flask app exposing ``/search`` and ``/reindex`` endpoints.
+
+    Args:
+        languages: Optional language(s) forwarded to
+            :func:`build_or_rebuild_index` and :func:`sql_lunr_index` so
+            that the index pipelines use the correct language-specific
+            stemmer / stop-word filter.
+    """
     from flask import Flask, jsonify, request  # type: ignore
     from flask_sqlalchemy import SQLAlchemy  # type: ignore
 
@@ -146,15 +183,40 @@ def create_app() -> "flask.Flask":  # type: ignore[name-defined]
 
     index_name = "site_search_v1"
 
+    class Document(db.Model):  # type: ignore[name-defined]
+        """Simple database model used for reindexing."""
+
+        __tablename__ = "documents"
+        id = db.Column(db.Integer, primary_key=True)
+        title = db.Column(db.Text, nullable=False, default="")
+        body = db.Column(db.Text, nullable=False, default="")
+
     @app.get("/search")
     def search():  # type: ignore[no-redef]
         query = request.args.get("q", "").strip()
         if not query:
             return jsonify([])
 
-        with sql_lunr_index(db, index_name) as idx:
+        with sql_lunr_index(db, index_name, languages=languages) as idx:
             results = idx.search(query)
 
         return jsonify(results[:20])
+
+    @app.post("/reindex")
+    def reindex():  # type: ignore[no-redef]
+        """Repopulate the search index from the ``Document`` model."""
+        docs = [
+            {"id": str(doc.id), "title": doc.title, "body": doc.body}
+            for doc in Document.query.all()
+        ]
+        build_or_rebuild_index(
+            db,
+            index_name,
+            docs,
+            ref_field="id",
+            text_fields=["title", "body"],
+            languages=languages,
+        )
+        return jsonify({"status": "ok", "indexed": len(docs)})
 
     return app
