@@ -136,9 +136,7 @@ def test_build_or_rebuild_with_languages_none_roundtrip(documents, tmp_path):
     """Passing ``languages=None`` explicitly should behave like the default."""
     db = _DB(tmp_path / "site.db")
 
-    build_or_rebuild_index(
-        db, "site_search", documents, languages=None,
-    )
+    build_or_rebuild_index(db, "site_search", documents, languages=None)
 
     with sql_lunr_index(db, "site_search", languages=None) as idx:
         refs = _refs(idx, "green")
