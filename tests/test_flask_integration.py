@@ -132,6 +132,31 @@ def test_sql_lunr_index_discovers_fields_from_doc_fields_when_no_postings(tmp_pa
         assert idx.fields == ["title"]
 
 
+def test_build_or_rebuild_with_languages_none_roundtrip(documents, tmp_path):
+    """Passing ``languages=None`` explicitly should behave like the default."""
+    db = _DB(tmp_path / "site.db")
+
+    build_or_rebuild_index(
+        db, "site_search", documents, languages=None,
+    )
+
+    with sql_lunr_index(db, "site_search", languages=None) as idx:
+        refs = _refs(idx, "green")
+
+    assert "b" in refs
+
+
+def test_sql_lunr_index_accepts_languages_kwarg(documents, tmp_path):
+    """``sql_lunr_index`` should accept a ``languages`` keyword argument."""
+    db = _DB(tmp_path / "site.db")
+    build_or_rebuild_index(db, "site_search", documents)
+
+    with sql_lunr_index(db, "site_search", languages=None) as idx:
+        refs = _refs(idx, "green")
+
+    assert "b" in refs
+
+
 def test_create_app_defers_imports_until_called(monkeypatch):
     import builtins
 
@@ -146,3 +171,20 @@ def test_create_app_defers_imports_until_called(monkeypatch):
 
     with pytest.raises(ModuleNotFoundError):
         create_app()
+
+
+def test_create_app_accepts_languages_parameter(monkeypatch):
+    """``create_app`` should accept a ``languages`` keyword."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def blocked_import(name, *args, **kwargs):
+        if name in {"flask", "flask_sqlalchemy"}:
+            raise ModuleNotFoundError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked_import)
+
+    with pytest.raises(ModuleNotFoundError):
+        create_app(languages=None)
