@@ -33,10 +33,10 @@ def get_russian_stop_words():
 @lru_cache(maxsize=1)
 def get_morph_analyzer():
     try:
-        from pymorphy2 import MorphAnalyzer
+        from pymorphy3 import MorphAnalyzer
     except ImportError as e:
         raise RuntimeError(
-            "Russian language support requires pymorphy2 and pymorphy2-dicts-ru. "
+            "Russian language support requires pymorphy3 and pymorphy3-dicts-ru. "
             "Install with: pip install lunr[russian]"
         ) from e
     return MorphAnalyzer()
