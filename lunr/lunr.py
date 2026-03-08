@@ -30,8 +30,10 @@ def lunr(
         documents (list): The list of dictonaries representing the documents
             to index. Optionally a 2-tuple of dicts, the first one being
             the document and the second the associated attributes to it.
-        languages (str or list, optional): The languages to use if using
-            NLTK language support, ignored if NLTK is not available.
+        languages (str or list, optional): The languages to use for the
+            language pipeline. If NLTK is unavailable, only NLTK-independent
+            languages (currently ``"ru"``) are allowed; requesting other
+            languages raises ``RuntimeError``.
         builder (Builder, optional): A pre-configured builder instance.
         storage (SqlStorage, optional): Optional SQL storage backend.
         workers (int, optional): Number of workers to use for SQL-backed
@@ -89,11 +91,21 @@ def get_default_builder(languages=None):
 
     Useful as a starting point to tweak the defaults.
     """
-    if languages is not None and lang.LANGUAGE_SUPPORT:
+    if languages is not None:
         if isinstance(languages, str):
             languages = [languages]
 
-        unsupported_languages = set(languages) - set(lang.SUPPORTED_LANGUAGES)
+        requested_languages = set(languages)
+        nltk_independent_languages = {"ru"}
+
+        if not lang.LANGUAGE_SUPPORT and not requested_languages.issubset(
+            nltk_independent_languages
+        ):
+            raise RuntimeError(
+                "Language support requires NLTK. Install with: pip install lunr[languages]"
+            )
+
+        unsupported_languages = requested_languages - set(lang.SUPPORTED_LANGUAGES)
         if unsupported_languages:
             raise RuntimeError(
                 "The specified languages {} are not supported, "
@@ -102,6 +114,8 @@ def get_default_builder(languages=None):
                     ", ".join(lang.SUPPORTED_LANGUAGES.keys()),
                 )
             )
+        if "ru" in languages:
+            lang.ru.get_morph_analyzer()
         builder = lang.get_nltk_builder(languages)
     else:
         builder = Builder()

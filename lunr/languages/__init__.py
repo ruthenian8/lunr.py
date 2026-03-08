@@ -7,6 +7,7 @@ from lunr.languages.trimmer import generate_trimmer
 from lunr.languages.stemmer import nltk_stemmer, get_language_stemmer
 from lunr.pipeline import Pipeline
 from lunr.stop_word_filter import stop_word_filter, generate_stop_word_filter
+from . import ru
 
 # map from ISO-639-1 codes to SnowballStemmer.languages
 # Languages not supported by nltk but by lunr.js: thai, japanese and turkish
@@ -53,8 +54,10 @@ def get_nltk_builder(languages):
     Args:
         languages (list): A list of supported languages.
     """
+    all_cleanup_filters = []
     all_stemmers = []
     all_stopwords_filters = []
+    all_search_filters = []
     all_word_characters = set()
 
     for language in languages:
@@ -62,10 +65,26 @@ def get_nltk_builder(languages):
             # use Lunr's defaults
             all_stemmers.append(lunr.stemmer.stemmer)
             all_stopwords_filters.append(stop_word_filter)
+            all_search_filters.append(lunr.stemmer.stemmer)
             all_word_characters.update({r"\w"})
+        elif language == "ru":
+            all_cleanup_filters.append(ru.russian_cleanup_filter)
+            all_stopwords_filters.append(ru.russian_stop_word_filter)
+            all_stemmers.append(ru.russian_morphology_filter)
+            all_search_filters.extend(
+                [
+                    ru.russian_cleanup_filter,
+                    ru.russian_stop_word_filter,
+                    ru.russian_morphology_filter,
+                ]
+            )
+            all_word_characters.update(ru.RUSSIAN_WORD_CHARACTERS)
         else:
             stopwords, word_characters = _get_stopwords_and_word_characters(language)
             all_stemmers.append(
+                Pipeline.registered_functions["stemmer-{}".format(language)]
+            )
+            all_search_filters.append(
                 Pipeline.registered_functions["stemmer-{}".format(language)]
             )
             all_stopwords_filters.append(
@@ -80,9 +99,11 @@ def get_nltk_builder(languages):
     )
     builder.pipeline.reset()
 
-    for fn in chain([multi_trimmer], all_stopwords_filters, all_stemmers):
+    for fn in chain(
+        [multi_trimmer], all_cleanup_filters, all_stopwords_filters, all_stemmers
+    ):
         builder.pipeline.add(fn)
-    for fn in all_stemmers:
+    for fn in all_search_filters:
         builder.search_pipeline.add(fn)
 
     return builder
@@ -90,7 +111,7 @@ def get_nltk_builder(languages):
 
 def register_languages():
     """Register all supported languages to ensure compatibility."""
-    for language in set(SUPPORTED_LANGUAGES) - {"en"}:
+    for language in set(SUPPORTED_LANGUAGES) - {"en", "ru"}:
         language_stemmer = partial(nltk_stemmer, get_language_stemmer(language))
         Pipeline.register_function(language_stemmer, "stemmer-{}".format(language))
 

@@ -72,6 +72,43 @@ If you have documents in multiple language pass a list of language codes:
 [{'ref': 'c', 'score': 1.106, 'match_data': <MatchData "english">}]
 ```
 
+
+## Russian plugin details
+
+Russian (`ru`) uses a dedicated plugin in the same `languages` pipeline system.
+
+- Cleanup happens before morphology: punctuation trimming, lowercasing, while preserving `ё` as distinct from `е`.
+- Stopword filtering uses a bundled merged Russian stopword list.
+- Lemmatization uses `pymorphy3` (`normal_form`) at both index and query time.
+
+Install dependencies with:
+
+```bash
+pip install lunr[russian]
+```
+
+If you are combining Russian with NLTK-backed languages, install both extras:
+
+```bash
+pip install lunr[languages,russian]
+```
+
+Example:
+
+```python
+idx = lunr(
+    ref="id",
+    fields=("title", "body"),
+    documents=[{"id": "1", "title": "Он читает книгу", "body": "Ёлкой, украшенной."}],
+    languages=["ru"],
+)
+
+idx.search("читала")   # matches document via lemma: читать
+idx.search("ёлка")     # matches ёлкой with diacritics preserved
+```
+
+Morphological parsing is context-free, so ambiguous forms are normalized using the top-ranked parse.
+
 ## Folding to ASCII
 
 It is often useful to allow for transliterated or unaccented

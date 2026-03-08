@@ -40,8 +40,10 @@ class TestLanguageSupport:
             lunr("id", ["title", "text"], documents, ["es", "foo"])
 
     def test_register_languages_in_pipeline_class(self):
-        for lang in set(SUPPORTED_LANGUAGES) - {"en"}:
+        for lang in set(SUPPORTED_LANGUAGES) - {"en", "ru"}:
             assert "stemmer-{}".format(lang) in Pipeline.registered_functions
+
+        assert "russian-morphology" in Pipeline.registered_functions
 
     def test_lunr_function_registers_nltk_stemmers_in_pipeline(self):
         idx = lunr("id", ["title", "text"], documents, ["es", "it"])

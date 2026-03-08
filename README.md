@@ -56,7 +56,10 @@ and produces the same results for a
 
 An optional and experimental support for other languages thanks to the
 [Natural Language Toolkit](http://www.nltk.org/) stemmers is also available via
-`pip install lunr[languages]`. The usage of the language feature is subject to
+`pip install lunr[languages]`. Russian language support additionally uses
+[pymorphy3](https://pypi.org/project/pymorphy3/) lemmatization and can be installed
+with `pip install lunr[russian]` (or alongside NLTK with
+`pip install lunr[languages,russian]`). The usage of the language feature is subject to
 [NTLK corpus licensing clauses](https://github.com/nltk/nltk#redistributing).
 
 Please refer to the
