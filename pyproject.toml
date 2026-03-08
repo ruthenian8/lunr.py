@@ -43,8 +43,8 @@ languages = [
     "nltk"
 ]
 russian = [
-    "pymorphy2",
-    "pymorphy2-dicts-ru",
+    "pymorphy3[fast]",
+    "pymorphy3-dicts-ru",
 ]
 tests = [
     "lunr[languages,russian]",

@@ -8,9 +8,9 @@ from lunr.languages import ru
 
 try:
     ru.get_morph_analyzer()
-    HAS_PYMORPHY2 = True
+    HAS_PYMORPHY3 = True
 except (RuntimeError, AttributeError):
-    HAS_PYMORPHY2 = False
+    HAS_PYMORPHY3 = False
 
 
 @pytest.mark.parametrize(
@@ -27,7 +27,7 @@ def test_clean_russian_token(raw, expected):
     assert ru.clean_russian_token(raw) == expected
 
 
-@pytest.mark.skipif(not HAS_PYMORPHY2, reason="pymorphy2 is not installed")
+@pytest.mark.skipif(not HAS_PYMORPHY3, reason="pymorphy3 is not installed")
 @pytest.mark.parametrize(
     "word,expected",
     [
@@ -42,7 +42,7 @@ def test_russian_morphology_normalization(word, expected):
     assert ru.normalize_russian_word(word) == expected
 
 
-@pytest.mark.skipif(not HAS_PYMORPHY2, reason="pymorphy2 is not installed")
+@pytest.mark.skipif(not HAS_PYMORPHY3, reason="pymorphy3 is not installed")
 def test_russian_search_case_and_tense_agnostic():
     docs = [
         {
@@ -57,7 +57,7 @@ def test_russian_search_case_and_tense_agnostic():
         assert [result["ref"] for result in idx.search(query)] == ["1"]
 
 
-@pytest.mark.skipif(not HAS_PYMORPHY2, reason="pymorphy2 is not installed")
+@pytest.mark.skipif(not HAS_PYMORPHY3, reason="pymorphy3 is not installed")
 def test_russian_search_cleanup_before_morphology():
     docs = [{"id": "1", "title": "Ёлкой, украшенной.", "body": "праздник"}]
     idx = lunr(ref="id", fields=("title", "body"), documents=docs, languages=["ru"])
@@ -66,7 +66,7 @@ def test_russian_search_cleanup_before_morphology():
         assert [result["ref"] for result in idx.search(query)] == ["1"]
 
 
-@pytest.mark.skipif(not HAS_PYMORPHY2, reason="pymorphy2 is not installed")
+@pytest.mark.skipif(not HAS_PYMORPHY3, reason="pymorphy3 is not installed")
 def test_russian_stop_words_filtered():
     builder = get_default_builder(["ru"])
     assert builder.pipeline.run_string("и") == []
@@ -83,21 +83,21 @@ def test_ru_missing_dependency_error(monkeypatch):
     real_import = __import__
 
     def fake_import(name, *args, **kwargs):
-        if name == "pymorphy2":
+        if name == "pymorphy3":
             raise ImportError("missing")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr("builtins.__import__", fake_import)
-    monkeypatch.delitem(sys.modules, "pymorphy2", raising=False)
+    monkeypatch.delitem(sys.modules, "pymorphy3", raising=False)
 
     try:
-        with pytest.raises(RuntimeError, match="pymorphy2 and pymorphy2-dicts-ru"):
+        with pytest.raises(RuntimeError, match="pymorphy3 and pymorphy3-dicts-ru"):
             get_default_builder(["ru"])
     finally:
         ru.get_morph_analyzer.cache_clear()
 
 
-@pytest.mark.skipif(not HAS_PYMORPHY2, reason="pymorphy2 is not installed")
+@pytest.mark.skipif(not HAS_PYMORPHY3, reason="pymorphy3 is not installed")
 def test_mixed_english_russian_does_not_crash(documents):
     docs = documents + [{"id": "ru", "title": "машина", "body": "он читает"}]
     idx = lunr(ref="id", fields=("title", "body"), documents=docs, languages=["en", "ru"])

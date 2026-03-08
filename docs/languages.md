@@ -79,7 +79,7 @@ Russian (`ru`) uses a dedicated plugin in the same `languages` pipeline system.
 
 - Cleanup happens before morphology: punctuation trimming, lowercasing, while preserving `ё` as distinct from `е`.
 - Stopword filtering uses a bundled merged Russian stopword list.
-- Lemmatization uses `pymorphy2` (`normal_form`) at both index and query time.
+- Lemmatization uses `pymorphy3` (`normal_form`) at both index and query time.
 
 Install dependencies with:
 
