@@ -9,7 +9,7 @@ from lunr.languages import ru
 try:
     ru.get_morph_analyzer()
     HAS_PYMORPHY2 = True
-except Exception:
+except (RuntimeError, AttributeError):
     HAS_PYMORPHY2 = False
 
 
