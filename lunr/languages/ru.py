@@ -1,4 +1,4 @@
-import html as _html_mod
+import html as _html
 import re
 import unicodedata
 from functools import lru_cache
@@ -61,7 +61,7 @@ def clean_russian_token(text):
 def split_and_clean_russian_token(text):
     """Split raw text that may contain HTML tags, entities, and punctuation
     into a list of clean token strings."""
-    text = _html_mod.unescape(text)
+    text = _html.unescape(text)
     text = _ALL_HTML_TAG_RE.sub(" ", text)
     decomposed = unicodedata.normalize("NFD", text)
     decomposed = _EXTRA_ORTH_RE.sub("", decomposed)
