@@ -11,6 +11,8 @@ from lunr.pipeline import Pipeline
 
 _PUNCTUATION_RE = re.compile(r"^\W+|\W+$")
 _CYRILLIC_RE = re.compile(r"[а-яё]")
+_EXTRA_ORTH_RE = re.compile("[\u0301*]")
+_CHTs_RE = re.compile("чц+")
 
 RUSSIAN_WORD_CHARACTERS = (
     {chr(code) for code in range(ord("а"), ord("я") + 1)}
@@ -43,8 +45,11 @@ def get_morph_analyzer():
 
 
 def clean_russian_token(text):
-    normalized = unicodedata.normalize("NFC", text).lower().strip()
+    decomposed = unicodedata.normalize("NFD", text)
+    decomposed = _EXTRA_ORTH_RE.sub("", decomposed)
+    normalized = unicodedata.normalize("NFC", decomposed).lower().strip()
     normalized = _PUNCTUATION_RE.sub("", normalized)
+    normalized = _CHTs_RE.sub("ч", normalized)
     return normalized
 
 
