@@ -1,3 +1,4 @@
+import html as _html
 import re
 import unicodedata
 from functools import lru_cache
@@ -9,11 +10,13 @@ except ImportError:  # pragma: no cover
 
 from lunr.pipeline import Pipeline
 
-_HTML_MARKUP_RE = re.compile(r"&amp;|&quot;|<br\s*/?>|<div>|<\/div>", re.IGNORECASE)
+_HTML_MARKUP_RE = re.compile(r"&[a-zA-Z]+;|&#\d+;|&#x[0-9a-fA-F]+;|<[^>]+>", re.IGNORECASE)
+_ALL_HTML_TAG_RE = re.compile(r"<[^>]+>", re.IGNORECASE)
 _PUNCTUATION_RE = re.compile(r"^\W+|\W+$")
 _CYRILLIC_RE = re.compile(r"[а-яё]")
 _EXTRA_ORTH_RE = re.compile("[\u0301*]")
 _CHTs_RE = re.compile("чц+")
+_WORD_RE = re.compile(r"\w+")
 
 RUSSIAN_WORD_CHARACTERS = (
     {chr(code) for code in range(ord("а"), ord("я") + 1)}
@@ -55,8 +58,29 @@ def clean_russian_token(text):
     return normalized
 
 
+def split_and_clean_russian_token(text):
+    """Split raw text that may contain HTML tags, entities, and punctuation
+    into a list of clean token strings."""
+    text = _html.unescape(text)
+    text = _ALL_HTML_TAG_RE.sub(" ", text)
+    decomposed = unicodedata.normalize("NFD", text)
+    decomposed = _EXTRA_ORTH_RE.sub("", decomposed)
+    normalized = unicodedata.normalize("NFC", decomposed).lower()
+    parts = _WORD_RE.findall(normalized)
+    return [_CHTs_RE.sub("ч", p) for p in parts]
+
+
 def russian_cleanup_filter(token, i=None, tokens=None):
-    return token.update(lambda s, m: clean_russian_token(s))
+    parts = split_and_clean_russian_token(str(token))
+    if not parts:
+        return None
+    token.update(lambda s, m: parts[0])
+    if len(parts) == 1:
+        return token
+    result = [token]
+    for part in parts[1:]:
+        result.append(token.clone(lambda s, m, p=part: p))
+    return result
 
 
 def russian_stop_word_filter(token, i=None, tokens=None):
