@@ -45,9 +45,10 @@ def get_morph_analyzer():
 
 
 def clean_russian_token(text):
-    normalized = unicodedata.normalize("NFC", text).lower().strip()
+    decomposed = unicodedata.normalize("NFD", text)
+    decomposed = _EXTRA_ORTH_RE.sub("", decomposed)
+    normalized = unicodedata.normalize("NFC", decomposed).lower().strip()
     normalized = _PUNCTUATION_RE.sub("", normalized)
-    normalized = _EXTRA_ORTH_RE.sub("", normalized)
     normalized = _CHTs_RE.sub("ч", normalized)
     return normalized
 
