@@ -9,6 +9,7 @@ except ImportError:  # pragma: no cover
 
 from lunr.pipeline import Pipeline
 
+_HTML_MARKUP_RE = re.compile(r"&amp;|&quot;|<br\s*/?>", re.IGNORECASE)
 _PUNCTUATION_RE = re.compile(r"^\W+|\W+$")
 _CYRILLIC_RE = re.compile(r"[а-яё]")
 _EXTRA_ORTH_RE = re.compile("[\u0301*]")
@@ -45,6 +46,7 @@ def get_morph_analyzer():
 
 
 def clean_russian_token(text):
+    text = _HTML_MARKUP_RE.sub("", text)
     decomposed = unicodedata.normalize("NFD", text)
     decomposed = _EXTRA_ORTH_RE.sub("", decomposed)
     normalized = unicodedata.normalize("NFC", decomposed).lower().strip()
