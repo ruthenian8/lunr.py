@@ -21,6 +21,10 @@ except (RuntimeError, AttributeError):
         ("ЁЛКА", "ёлка"),
         ("ёлка", "ёлка"),
         ("елка", "елка"),
+        ("маши\u0301на", "машина"),
+        ("до*м", "дом"),
+        ("чцать", "чать"),
+        ("чцц", "ч"),
     ],
 )
 def test_clean_russian_token(raw, expected):
