@@ -874,7 +874,7 @@ class Builder:
         """
         terms_to_remove = []
         for term, posting in self.inverted_index.items():
-            doc_refs: set = set()
+            doc_refs = set()
             for field_name in self._fields:
                 doc_refs.update(posting.get(field_name, {}))
             if len(doc_refs) >= self._df_threshold:
