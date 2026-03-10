@@ -436,6 +436,52 @@ class SqlIndexWriter:
             values,
         )
 
+    def purge_terms_above_df(self, threshold: int) -> None:
+        """Delete terms whose document frequency meets or exceeds *threshold*.
+
+        Document frequency is the number of distinct documents that contain the
+        term (across any field).  The method removes matching rows from
+        ``lunr_terms``, ``lunr_postings``, and ``lunr_term_frequencies`` so
+        that subsequent vector computation naturally skips the purged terms.
+        """
+        ph = self.storage.dialect.placeholder
+        c = self.conn.cursor()
+
+        # Identify terms to purge using the postings table.
+        c.execute(
+            "SELECT term FROM lunr_postings "
+            f"WHERE index_name = {ph} "
+            "GROUP BY term "
+            f"HAVING COUNT(DISTINCT doc_ref) >= {ph}",
+            (self.index_name, threshold),
+        )
+        terms = [row[0] for row in c.fetchall()]
+        if not terms:
+            return
+
+        # Delete in batches to stay within parameter limits.
+        batch_size = 500
+        for i in range(0, len(terms), batch_size):
+            batch = terms[i : i + batch_size]
+            placeholders = ", ".join([ph] * len(batch))
+            params: tuple = (self.index_name, *batch)
+
+            c.execute(
+                f"DELETE FROM lunr_terms WHERE index_name = {ph} "
+                f"AND term IN ({placeholders})",
+                params,
+            )
+            c.execute(
+                f"DELETE FROM lunr_postings WHERE index_name = {ph} "
+                f"AND term IN ({placeholders})",
+                params,
+            )
+            c.execute(
+                f"DELETE FROM lunr_term_frequencies WHERE index_name = {ph} "
+                f"AND term IN ({placeholders})",
+                params,
+            )
+
     def commit(self) -> None:
         self.conn.commit()
 

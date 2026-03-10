@@ -96,6 +96,7 @@ class Builder:
         self._sql_row_batch_size = 5000
         self._sql_commit_every_docs = None
         self._sql_commit_every_rows = None
+        self._df_threshold = None
 
     def ref(self, ref):
         """Sets the document field used as the document reference.
@@ -285,6 +286,23 @@ class Builder:
         self._sql_commit_every_rows = None if rows is None else max(1, int(rows))
         return self
 
+    def df_threshold(self, threshold):
+        """Set a document frequency threshold for SQL-backed builds.
+
+        Terms appearing in at least *threshold* distinct documents will be
+        removed from the index before field vectors are computed.  For
+        incremental SQL builds the removal is performed directly in the
+        database, avoiding additional in-memory data structures.
+
+        Parameters
+        ----------
+        threshold : int or None
+            Minimum number of distinct documents a term must appear in to
+            be purged.  ``None`` disables filtering (the default).
+        """
+        self._df_threshold = max(1, int(threshold)) if threshold is not None else None
+        return self
+
     def build(self):
         """Builds the index, creating an instance of `lunr.Index`.
 
@@ -314,6 +332,8 @@ class Builder:
         # modes. These operations populate self.field_vectors and
         # self.field_lengths used by the scoring algorithm.
         self._calculate_average_field_lengths()
+        if self._df_threshold is not None and self._storage_backend is not None:
+            self._apply_df_threshold_in_memory()
         self._create_field_vectors()
         # Determine whether we are operating with a storage backend. If not,
         # build and return an in‑memory index as before.
@@ -394,6 +414,8 @@ class Builder:
                 self._merge_partial(doc_ref, partial_fields)
 
         self._calculate_average_field_lengths()
+        if self._df_threshold is not None:
+            self._apply_df_threshold_in_memory()
         self._create_field_vectors()
 
         writer = self._storage_backend.writer()
@@ -566,6 +588,9 @@ class Builder:
 
         rows_since_commit += self._flush_incremental_batches(writer, batches)
 
+        if self._df_threshold is not None:
+            writer.purge_terms_above_df(self._df_threshold)
+
         reader = self._storage_backend.reader()
         vectors_batch = []
         current_field_ref = None
@@ -726,6 +751,9 @@ class Builder:
             count = field_doc_count[field_name] or 1
             self.average_field_length[field_name] = field_length_sum[field_name] / count
 
+        if self._df_threshold is not None:
+            writer.purge_terms_above_df(self._df_threshold)
+
         reader = self._storage_backend.reader()
         vectors_batch = []
         doc_field_lengths = {
@@ -835,6 +863,25 @@ class Builder:
         """Creates a token set of all tokens in the index using `lunr.TokenSet`"""
         self.token_set = TokenSet.from_list(sorted(list(self.inverted_index.keys())))
 
+    def _apply_df_threshold_in_memory(self):
+        """Remove high-df terms from the in-memory inverted index.
+
+        Iterates the existing ``inverted_index`` to compute per-term document
+        frequency (distinct doc_refs) and deletes every term whose df meets or
+        exceeds ``self._df_threshold``.  The companion method
+        ``_create_field_vectors`` already skips terms absent from the inverted
+        index, so no changes to ``field_term_frequencies`` are needed.
+        """
+        terms_to_remove = []
+        for term, posting in self.inverted_index.items():
+            doc_refs: set = set()
+            for field_name in self._fields:
+                doc_refs.update(posting.get(field_name, {}))
+            if len(doc_refs) >= self._df_threshold:
+                terms_to_remove.append(term)
+        for term in terms_to_remove:
+            del self.inverted_index[term]
+
     def _calculate_average_field_lengths(self):
         """Calculates the average document length for this index"""
         accumulator = defaultdict(int)
@@ -866,6 +913,8 @@ class Builder:
             doc_boost = self._documents[_field_ref.doc_ref].get("boost", 1)
 
             for term, tf in term_frequencies.items():
+                if term not in self.inverted_index:
+                    continue
                 term_index = self.inverted_index[term]["_index"]
 
                 if term not in term_idf_cache:
