@@ -487,11 +487,17 @@ class SqlIndexWriter:
 
         After high-df terms are purged from ``lunr_term_frequencies``, the
         ``length`` stored in ``lunr_doc_fields`` becomes stale.  This method
-        sets each row's ``length`` to ``SUM(tf)`` of its surviving terms so
-        that subsequent BM25 scoring normalises by the correct field length.
+        first zeroes every length (so fields that lost all terms get length 0),
+        then sets each row's ``length`` to ``SUM(tf)`` of its surviving terms
+        so that subsequent BM25 scoring normalises by the correct field length.
         """
         ph = self.storage.dialect.placeholder
         c = self.conn.cursor()
+        # Zero all lengths first so fields with no surviving terms get 0.
+        c.execute(
+            f"UPDATE lunr_doc_fields SET length = 0 WHERE index_name = {ph}",
+            (self.index_name,),
+        )
         c.execute(
             "SELECT field_ref, SUM(tf) FROM lunr_term_frequencies "
             f"WHERE index_name = {ph} GROUP BY field_ref",

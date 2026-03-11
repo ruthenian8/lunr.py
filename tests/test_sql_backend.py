@@ -583,6 +583,51 @@ def test_df_threshold_vectors_agree_across_all_build_paths(documents):
     assert standard == parallel
     assert standard == incremental
     assert standard == par_inc
+
+
+def test_df_threshold_zeroes_fully_purged_field_lengths_in_sql():
+    """Fields that lose ALL terms after purge must have length 0 in SQL."""
+    docs = [
+        {"id": "a", "title": "common", "body": "unique alpha text"},
+        {"id": "b", "title": "common", "body": "unique beta text"},
+        {"id": "c", "title": "common", "body": "unique gamma text"},
+    ]
+
+    def _build(label, incremental):
+        st = _sqlite_storage(label)
+        b = get_default_builder()
+        b.ref("id")
+        b.field("title")
+        b.field("body")
+        b.storage(st)
+        b.df_threshold(3)
+        if incremental:
+            b.sql_flush(enabled=True, doc_batch_size=10, row_batch_size=100)
+        for d in docs:
+            b.add(d)
+        b.build()
+
+        c = st.conn.cursor()
+        c.execute(
+            "SELECT d.field_ref, d.length, COALESCE(t.total, 0) "
+            "FROM lunr_doc_fields d "
+            "LEFT JOIN ("
+            "  SELECT field_ref, SUM(tf) AS total "
+            "  FROM lunr_term_frequencies WHERE index_name = ? GROUP BY field_ref"
+            ") t ON d.field_ref = t.field_ref "
+            "WHERE d.index_name = ?",
+            (st.index_name, st.index_name),
+        )
+        return c.fetchall()
+
+    for label, incremental in [("zero-std", False), ("zero-inc", True)]:
+        for field_ref, stored_len, tf_sum in _build(label, incremental):
+            assert stored_len == tf_sum, (
+                f"{label} {field_ref}: stored length {stored_len} != tf sum {tf_sum}"
+            )
+
+
+@pytest.mark.mysql
 def test_mysql_backend_matches_memory_for_positive_queries(documents, mysql_storage):
     mem_idx = lunr(ref="id", fields=("title", "body"), documents=documents)
     sql_idx = _build_sql_index(documents, mysql_storage)
