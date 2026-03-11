@@ -374,6 +374,259 @@ def test_sql_backend_parallel_incremental_flush_matches_standard(documents):
     assert _refs(incremental_idx, "green study") == _refs(standard_idx, "green study")
 
 
+# ---------------------------------------------------------------------------
+# df_threshold tests
+# ---------------------------------------------------------------------------
+
+
+def test_df_threshold_standard_sql_build_removes_high_df_terms(documents):
+    storage = _sqlite_storage("df-standard")
+    builder = get_default_builder()
+    builder.ref("id")
+    builder.field("title")
+    builder.field("body")
+    builder.storage(storage)
+    builder.df_threshold(3)
+    for doc in documents:
+        builder.add(doc)
+    idx = builder.build()
+
+    # "green" appears in all 3 docs (df=3) -> removed
+    assert _refs(idx, "green") == []
+    # "plant" has df=2, still searchable
+    assert _refs(idx, "plant") != []
+
+
+def test_df_threshold_incremental_sql_purges_from_database(documents):
+    storage = _sqlite_storage("df-incremental")
+    builder = get_default_builder()
+    builder.ref("id")
+    builder.field("title")
+    builder.field("body")
+    builder.storage(storage)
+    builder.sql_flush(enabled=True, doc_batch_size=1, row_batch_size=2)
+    builder.df_threshold(3)
+    for doc in documents:
+        builder.add(doc)
+    idx = builder.build()
+
+    assert _refs(idx, "green") == []
+    assert _refs(idx, "plant") != []
+
+
+def test_df_threshold_parallel_sql_build_removes_high_df_terms(documents):
+    storage = _sqlite_storage("df-parallel")
+    builder = get_default_builder()
+    builder.ref("id")
+    builder.field("title")
+    builder.field("body")
+    builder.storage(storage)
+    builder.parallel(workers=2, backend="thread")
+    builder.df_threshold(3)
+    for doc in documents:
+        builder.add(doc)
+    idx = builder.build()
+
+    assert _refs(idx, "green") == []
+    assert _refs(idx, "plant") != []
+
+
+def test_df_threshold_parallel_incremental_purges_from_database(documents):
+    storage = _sqlite_storage("df-par-inc")
+    builder = get_default_builder()
+    builder.ref("id")
+    builder.field("title")
+    builder.field("body")
+    builder.storage(storage)
+    builder.parallel(workers=2, backend="thread")
+    builder.sql_flush(enabled=True, doc_batch_size=1, row_batch_size=2)
+    builder.df_threshold(3)
+    for doc in documents:
+        builder.add(doc)
+    idx = builder.build()
+
+    assert _refs(idx, "green") == []
+    assert _refs(idx, "plant") != []
+
+
+def test_df_threshold_no_effect_when_no_terms_exceed(documents):
+    storage_no = _sqlite_storage("df-no-effect")
+    storage_hi = _sqlite_storage("df-high")
+    baseline = _build_sql_index(documents, storage_no)
+
+    builder = get_default_builder()
+    builder.ref("id")
+    builder.field("title")
+    builder.field("body")
+    builder.storage(storage_hi)
+    builder.df_threshold(100)
+    for doc in documents:
+        builder.add(doc)
+    idx = builder.build()
+
+    assert _refs(idx, "green study") == _refs(baseline, "green study")
+
+
+def test_df_threshold_via_lunr_convenience(documents):
+    storage = _sqlite_storage("df-lunr")
+    idx = lunr(
+        ref="id",
+        fields=("title", "body"),
+        documents=documents,
+        storage=storage,
+        df_threshold=3,
+    )
+
+    assert _refs(idx, "green") == []
+    assert _refs(idx, "plant") != []
+
+
+def test_df_threshold_removes_term_rows_from_sql_tables(documents):
+    storage = _sqlite_storage("df-rows")
+    builder = get_default_builder()
+    builder.ref("id")
+    builder.field("title")
+    builder.field("body")
+    builder.storage(storage)
+    builder.sql_flush(enabled=True, doc_batch_size=10, row_batch_size=100)
+    builder.df_threshold(3)
+    for doc in documents:
+        builder.add(doc)
+    builder.build()
+
+    c = storage.conn.cursor()
+    c.execute(
+        "SELECT COUNT(*) FROM lunr_terms WHERE index_name = ? AND term = ?",
+        (storage.index_name, "green"),
+    )
+    assert c.fetchone()[0] == 0
+
+    c.execute(
+        "SELECT COUNT(*) FROM lunr_postings WHERE index_name = ? AND term = ?",
+        (storage.index_name, "green"),
+    )
+    assert c.fetchone()[0] == 0
+
+    c.execute(
+        "SELECT COUNT(*) FROM lunr_term_frequencies WHERE index_name = ? AND term = ?",
+        (storage.index_name, "green"),
+    )
+    assert c.fetchone()[0] == 0
+
+
+def test_df_threshold_adjusts_doc_field_lengths_in_sql(documents):
+    """After purge, lunr_doc_fields.length reflects only surviving terms."""
+    storage = _sqlite_storage("df-lengths")
+    builder = get_default_builder()
+    builder.ref("id")
+    builder.field("title")
+    builder.field("body")
+    builder.storage(storage)
+    builder.sql_flush(enabled=True, doc_batch_size=10, row_batch_size=100)
+    builder.df_threshold(3)
+    for doc in documents:
+        builder.add(doc)
+    builder.build()
+
+    c = storage.conn.cursor()
+    # For every field_ref, stored length must equal sum of surviving tf values.
+    c.execute(
+        "SELECT d.field_ref, d.length, COALESCE(t.total, 0) "
+        "FROM lunr_doc_fields d "
+        "LEFT JOIN ("
+        "  SELECT field_ref, SUM(tf) AS total "
+        "  FROM lunr_term_frequencies WHERE index_name = ? GROUP BY field_ref"
+        ") t ON d.field_ref = t.field_ref "
+        "WHERE d.index_name = ?",
+        (storage.index_name, storage.index_name),
+    )
+    for field_ref, stored_len, tf_sum in c.fetchall():
+        assert stored_len == tf_sum, (
+            f"{field_ref}: stored length {stored_len} != tf sum {tf_sum}"
+        )
+
+
+def test_df_threshold_vectors_agree_across_all_build_paths(documents):
+    """Standard, parallel, incremental, and parallel-incremental must produce
+    the same field vectors when the same df_threshold is applied."""
+    import json
+
+    def _build(label, parallel=False, incremental=False):
+        st = _sqlite_storage(label)
+        b = get_default_builder()
+        b.ref("id")
+        b.field("title")
+        b.field("body")
+        b.storage(st)
+        b.df_threshold(3)
+        if parallel:
+            b.parallel(workers=2, backend="thread")
+        if incremental:
+            b.sql_flush(enabled=True, doc_batch_size=1, row_batch_size=2)
+        for d in documents:
+            b.add(d)
+        b.build()
+        # Read back all field vectors from DB so we can compare.
+        c = st.conn.cursor()
+        c.execute(
+            "SELECT field_ref, elements FROM lunr_field_vectors "
+            "WHERE index_name = ? ORDER BY field_ref",
+            (st.index_name,),
+        )
+        return {fr: json.loads(elems) for fr, elems in c.fetchall()}
+
+    standard = _build("std")
+    parallel = _build("par", parallel=True)
+    incremental = _build("inc", incremental=True)
+    par_inc = _build("pi", parallel=True, incremental=True)
+
+    assert standard == parallel
+    assert standard == incremental
+    assert standard == par_inc
+
+
+def test_df_threshold_zeroes_fully_purged_field_lengths_in_sql():
+    """Fields that lose ALL terms after purge must have length 0 in SQL."""
+    docs = [
+        {"id": "a", "title": "common", "body": "unique alpha text"},
+        {"id": "b", "title": "common", "body": "unique beta text"},
+        {"id": "c", "title": "common", "body": "unique gamma text"},
+    ]
+
+    def _build(label, incremental):
+        st = _sqlite_storage(label)
+        b = get_default_builder()
+        b.ref("id")
+        b.field("title")
+        b.field("body")
+        b.storage(st)
+        b.df_threshold(3)
+        if incremental:
+            b.sql_flush(enabled=True, doc_batch_size=10, row_batch_size=100)
+        for d in docs:
+            b.add(d)
+        b.build()
+
+        c = st.conn.cursor()
+        c.execute(
+            "SELECT d.field_ref, d.length, COALESCE(t.total, 0) "
+            "FROM lunr_doc_fields d "
+            "LEFT JOIN ("
+            "  SELECT field_ref, SUM(tf) AS total "
+            "  FROM lunr_term_frequencies WHERE index_name = ? GROUP BY field_ref"
+            ") t ON d.field_ref = t.field_ref "
+            "WHERE d.index_name = ?",
+            (st.index_name, st.index_name),
+        )
+        return c.fetchall()
+
+    for label, incremental in [("zero-std", False), ("zero-inc", True)]:
+        for field_ref, stored_len, tf_sum in _build(label, incremental):
+            assert stored_len == tf_sum, (
+                f"{label} {field_ref}: stored length {stored_len} != tf sum {tf_sum}"
+            )
+
+
 @pytest.mark.mysql
 def test_mysql_backend_matches_memory_for_positive_queries(documents, mysql_storage):
     mem_idx = lunr(ref="id", fields=("title", "body"), documents=documents)
