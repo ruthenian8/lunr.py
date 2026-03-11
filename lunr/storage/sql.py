@@ -497,11 +497,19 @@ class SqlIndexWriter:
             f"WHERE index_name = {ph} GROUP BY field_ref",
             (self.index_name,),
         )
-        for field_ref, new_length in c.fetchall():
-            c.execute(
+        updates = c.fetchall()
+        if not updates:
+            return
+        batch_size = 500
+        for i in range(0, len(updates), batch_size):
+            batch = updates[i : i + batch_size]
+            c.executemany(
                 f"UPDATE lunr_doc_fields SET length = {ph} "
                 f"WHERE index_name = {ph} AND field_ref = {ph}",
-                (new_length, self.index_name, field_ref),
+                [
+                    (new_length, self.index_name, field_ref)
+                    for field_ref, new_length in batch
+                ],
             )
 
     def commit(self) -> None:

@@ -498,6 +498,18 @@ class Builder:
 
         return backend
 
+    def _recompute_avg_field_lengths_from_sql(self, reader):
+        """Recompute ``average_field_length`` from updated SQL doc_fields."""
+        self.average_field_length = defaultdict(float)
+        field_length_sum = defaultdict(int)
+        field_doc_count = defaultdict(int)
+        for _fr, field, _dr, length in reader.iter_doc_fields():
+            field_length_sum[field] += length
+            field_doc_count[field] += 1
+        for field_name in self._fields:
+            count = field_doc_count[field_name] or 1
+            self.average_field_length[field_name] = field_length_sum[field_name] / count
+
     def _flush_incremental_batches(self, writer, batches):
         rows_written = 0
         if batches["terms"]:
@@ -591,22 +603,12 @@ class Builder:
         if self._df_threshold is not None:
             writer.purge_terms_above_df(self._df_threshold)
             writer.recompute_doc_field_lengths()
-            # Recompute average field lengths from the updated SQL data.
-            self.average_field_length = defaultdict(float)
-            field_length_sum = defaultdict(int)
-            field_doc_count = defaultdict(int)
 
         reader = self._storage_backend.reader()
 
         if self._df_threshold is not None:
-            for _fr, field, _dr, length in reader.iter_doc_fields():
-                field_length_sum[field] += length
-                field_doc_count[field] += 1
-            for field_name in self._fields:
-                count = field_doc_count[field_name] or 1
-                self.average_field_length[field_name] = (
-                    field_length_sum[field_name] / count
-                )
+            self._recompute_avg_field_lengths_from_sql(reader)
+
         vectors_batch = []
         current_field_ref = None
         current_vector = None
@@ -769,22 +771,12 @@ class Builder:
         if self._df_threshold is not None:
             writer.purge_terms_above_df(self._df_threshold)
             writer.recompute_doc_field_lengths()
-            # Recompute average field lengths from the updated SQL data.
-            self.average_field_length = defaultdict(float)
-            field_length_sum = defaultdict(int)
-            field_doc_count = defaultdict(int)
 
         reader = self._storage_backend.reader()
 
         if self._df_threshold is not None:
-            for _fr, field, _dr, length in reader.iter_doc_fields():
-                field_length_sum[field] += length
-                field_doc_count[field] += 1
-            for field_name in self._fields:
-                count = field_doc_count[field_name] or 1
-                self.average_field_length[field_name] = (
-                    field_length_sum[field_name] / count
-                )
+            self._recompute_avg_field_lengths_from_sql(reader)
+
         vectors_batch = []
         doc_field_lengths = {
             field_ref: (field, doc_ref, length)
