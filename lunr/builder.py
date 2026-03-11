@@ -331,9 +331,9 @@ class Builder:
         # Calculate average field lengths and construct field vectors in all
         # modes. These operations populate self.field_vectors and
         # self.field_lengths used by the scoring algorithm.
-        self._calculate_average_field_lengths()
         if self._df_threshold is not None and self._storage_backend is not None:
             self._apply_df_threshold_in_memory()
+        self._calculate_average_field_lengths()
         self._create_field_vectors()
         # Determine whether we are operating with a storage backend. If not,
         # build and return an in‑memory index as before.
@@ -413,9 +413,9 @@ class Builder:
             ):
                 self._merge_partial(doc_ref, partial_fields)
 
-        self._calculate_average_field_lengths()
         if self._df_threshold is not None:
             self._apply_df_threshold_in_memory()
+        self._calculate_average_field_lengths()
         self._create_field_vectors()
 
         writer = self._storage_backend.writer()
@@ -590,8 +590,23 @@ class Builder:
 
         if self._df_threshold is not None:
             writer.purge_terms_above_df(self._df_threshold)
+            writer.recompute_doc_field_lengths()
+            # Recompute average field lengths from the updated SQL data.
+            self.average_field_length = defaultdict(float)
+            field_length_sum = defaultdict(int)
+            field_doc_count = defaultdict(int)
 
         reader = self._storage_backend.reader()
+
+        if self._df_threshold is not None:
+            for _fr, field, _dr, length in reader.iter_doc_fields():
+                field_length_sum[field] += length
+                field_doc_count[field] += 1
+            for field_name in self._fields:
+                count = field_doc_count[field_name] or 1
+                self.average_field_length[field_name] = (
+                    field_length_sum[field_name] / count
+                )
         vectors_batch = []
         current_field_ref = None
         current_vector = None
@@ -753,8 +768,23 @@ class Builder:
 
         if self._df_threshold is not None:
             writer.purge_terms_above_df(self._df_threshold)
+            writer.recompute_doc_field_lengths()
+            # Recompute average field lengths from the updated SQL data.
+            self.average_field_length = defaultdict(float)
+            field_length_sum = defaultdict(int)
+            field_doc_count = defaultdict(int)
 
         reader = self._storage_backend.reader()
+
+        if self._df_threshold is not None:
+            for _fr, field, _dr, length in reader.iter_doc_fields():
+                field_length_sum[field] += length
+                field_doc_count[field] += 1
+            for field_name in self._fields:
+                count = field_doc_count[field_name] or 1
+                self.average_field_length[field_name] = (
+                    field_length_sum[field_name] / count
+                )
         vectors_batch = []
         doc_field_lengths = {
             field_ref: (field, doc_ref, length)
@@ -868,9 +898,9 @@ class Builder:
 
         Iterates the existing ``inverted_index`` to compute per-term document
         frequency (distinct doc_refs) and deletes every term whose df meets or
-        exceeds ``self._df_threshold``.  The companion method
-        ``_create_field_vectors`` already skips terms absent from the inverted
-        index, so no changes to ``field_term_frequencies`` are needed.
+        exceeds ``self._df_threshold``.  Field lengths stored in
+        ``self.field_lengths`` are adjusted so that subsequent average-length
+        calculation excludes the purged tokens.
         """
         terms_to_remove = []
         for term, posting in self.inverted_index.items():
@@ -879,6 +909,14 @@ class Builder:
                 doc_refs.update(posting.get(field_name, {}))
             if len(doc_refs) >= self._df_threshold:
                 terms_to_remove.append(term)
+        if not terms_to_remove:
+            return
+        # Adjust per-document field lengths by subtracting removed terms' tf.
+        removed = set(terms_to_remove)
+        for field_ref, term_freqs in self.field_term_frequencies.items():
+            reduction = sum(tf for t, tf in term_freqs.items() if t in removed)
+            if reduction:
+                self.field_lengths[field_ref] -= reduction
         for term in terms_to_remove:
             del self.inverted_index[term]
 

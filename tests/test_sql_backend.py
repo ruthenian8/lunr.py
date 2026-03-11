@@ -514,7 +514,75 @@ def test_df_threshold_removes_term_rows_from_sql_tables(documents):
     assert c.fetchone()[0] == 0
 
 
-@pytest.mark.mysql
+def test_df_threshold_adjusts_doc_field_lengths_in_sql(documents):
+    """After purge, lunr_doc_fields.length reflects only surviving terms."""
+    storage = _sqlite_storage("df-lengths")
+    builder = get_default_builder()
+    builder.ref("id")
+    builder.field("title")
+    builder.field("body")
+    builder.storage(storage)
+    builder.sql_flush(enabled=True, doc_batch_size=10, row_batch_size=100)
+    builder.df_threshold(3)
+    for doc in documents:
+        builder.add(doc)
+    builder.build()
+
+    c = storage.conn.cursor()
+    # For every field_ref, stored length must equal sum of surviving tf values.
+    c.execute(
+        "SELECT d.field_ref, d.length, COALESCE(t.total, 0) "
+        "FROM lunr_doc_fields d "
+        "LEFT JOIN ("
+        "  SELECT field_ref, SUM(tf) AS total "
+        "  FROM lunr_term_frequencies WHERE index_name = ? GROUP BY field_ref"
+        ") t ON d.field_ref = t.field_ref "
+        "WHERE d.index_name = ?",
+        (storage.index_name, storage.index_name),
+    )
+    for field_ref, stored_len, tf_sum in c.fetchall():
+        assert stored_len == tf_sum, (
+            f"{field_ref}: stored length {stored_len} != tf sum {tf_sum}"
+        )
+
+
+def test_df_threshold_vectors_agree_across_all_build_paths(documents):
+    """Standard, parallel, incremental, and parallel-incremental must produce
+    the same field vectors when the same df_threshold is applied."""
+    import json
+
+    def _build(label, parallel=False, incremental=False):
+        st = _sqlite_storage(label)
+        b = get_default_builder()
+        b.ref("id")
+        b.field("title")
+        b.field("body")
+        b.storage(st)
+        b.df_threshold(3)
+        if parallel:
+            b.parallel(workers=2, backend="thread")
+        if incremental:
+            b.sql_flush(enabled=True, doc_batch_size=1, row_batch_size=2)
+        for d in documents:
+            b.add(d)
+        b.build()
+        # Read back all field vectors from DB so we can compare.
+        c = st.conn.cursor()
+        c.execute(
+            "SELECT field_ref, elements FROM lunr_field_vectors "
+            "WHERE index_name = ? ORDER BY field_ref",
+            (st.index_name,),
+        )
+        return {fr: json.loads(elems) for fr, elems in c.fetchall()}
+
+    standard = _build("std")
+    parallel = _build("par", parallel=True)
+    incremental = _build("inc", incremental=True)
+    par_inc = _build("pi", parallel=True, incremental=True)
+
+    assert standard == parallel
+    assert standard == incremental
+    assert standard == par_inc
 def test_mysql_backend_matches_memory_for_positive_queries(documents, mysql_storage):
     mem_idx = lunr(ref="id", fields=("title", "body"), documents=documents)
     sql_idx = _build_sql_index(documents, mysql_storage)

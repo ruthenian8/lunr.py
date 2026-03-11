@@ -482,6 +482,28 @@ class SqlIndexWriter:
                 params,
             )
 
+    def recompute_doc_field_lengths(self) -> None:
+        """Recompute ``lunr_doc_fields.length`` from remaining term frequencies.
+
+        After high-df terms are purged from ``lunr_term_frequencies``, the
+        ``length`` stored in ``lunr_doc_fields`` becomes stale.  This method
+        sets each row's ``length`` to ``SUM(tf)`` of its surviving terms so
+        that subsequent BM25 scoring normalises by the correct field length.
+        """
+        ph = self.storage.dialect.placeholder
+        c = self.conn.cursor()
+        c.execute(
+            "SELECT field_ref, SUM(tf) FROM lunr_term_frequencies "
+            f"WHERE index_name = {ph} GROUP BY field_ref",
+            (self.index_name,),
+        )
+        for field_ref, new_length in c.fetchall():
+            c.execute(
+                f"UPDATE lunr_doc_fields SET length = {ph} "
+                f"WHERE index_name = {ph} AND field_ref = {ph}",
+                (new_length, self.index_name, field_ref),
+            )
+
     def commit(self) -> None:
         self.conn.commit()
 
