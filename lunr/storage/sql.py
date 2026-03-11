@@ -436,6 +436,88 @@ class SqlIndexWriter:
             values,
         )
 
+    def purge_terms_above_df(self, threshold: int) -> None:
+        """Delete terms whose document frequency meets or exceeds *threshold*.
+
+        Document frequency is the number of distinct documents that contain the
+        term (across any field).  The method removes matching rows from
+        ``lunr_terms``, ``lunr_postings``, and ``lunr_term_frequencies`` so
+        that subsequent vector computation naturally skips the purged terms.
+        """
+        ph = self.storage.dialect.placeholder
+        c = self.conn.cursor()
+
+        # Identify terms to purge using the postings table.
+        c.execute(
+            "SELECT term FROM lunr_postings "
+            f"WHERE index_name = {ph} "
+            "GROUP BY term "
+            f"HAVING COUNT(DISTINCT doc_ref) >= {ph}",
+            (self.index_name, threshold),
+        )
+        terms = [row[0] for row in c.fetchall()]
+        if not terms:
+            return
+
+        # Delete in batches to stay within parameter limits.
+        batch_size = 500
+        for i in range(0, len(terms), batch_size):
+            batch = terms[i : i + batch_size]
+            placeholders = ", ".join([ph] * len(batch))
+            params: tuple = (self.index_name, *batch)
+
+            c.execute(
+                f"DELETE FROM lunr_terms WHERE index_name = {ph} "
+                f"AND term IN ({placeholders})",
+                params,
+            )
+            c.execute(
+                f"DELETE FROM lunr_postings WHERE index_name = {ph} "
+                f"AND term IN ({placeholders})",
+                params,
+            )
+            c.execute(
+                f"DELETE FROM lunr_term_frequencies WHERE index_name = {ph} "
+                f"AND term IN ({placeholders})",
+                params,
+            )
+
+    def recompute_doc_field_lengths(self) -> None:
+        """Recompute ``lunr_doc_fields.length`` from remaining term frequencies.
+
+        After high-df terms are purged from ``lunr_term_frequencies``, the
+        ``length`` stored in ``lunr_doc_fields`` becomes stale.  This method
+        first zeroes every length (so fields that lost all terms get length 0),
+        then sets each row's ``length`` to ``SUM(tf)`` of its surviving terms
+        so that subsequent BM25 scoring normalises by the correct field length.
+        """
+        ph = self.storage.dialect.placeholder
+        c = self.conn.cursor()
+        # Zero all lengths first so fields with no surviving terms get 0.
+        c.execute(
+            f"UPDATE lunr_doc_fields SET length = 0 WHERE index_name = {ph}",
+            (self.index_name,),
+        )
+        c.execute(
+            "SELECT field_ref, SUM(tf) FROM lunr_term_frequencies "
+            f"WHERE index_name = {ph} GROUP BY field_ref",
+            (self.index_name,),
+        )
+        updates = c.fetchall()
+        if not updates:
+            return
+        batch_size = 500
+        for i in range(0, len(updates), batch_size):
+            batch = updates[i : i + batch_size]
+            c.executemany(
+                f"UPDATE lunr_doc_fields SET length = {ph} "
+                f"WHERE index_name = {ph} AND field_ref = {ph}",
+                [
+                    (new_length, self.index_name, field_ref)
+                    for field_ref, new_length in batch
+                ],
+            )
+
     def commit(self) -> None:
         self.conn.commit()
 

@@ -16,6 +16,7 @@ def lunr(
     storage=None,
     workers=None,
     parallel_backend="process",
+    df_threshold=None,
 ):
     """A convenience function to configure and construct a lunr.Index.
 
@@ -38,6 +39,9 @@ def lunr(
             parallel builds. If omitted, defaults to single-worker behavior.
         parallel_backend (str, optional): Parallel executor backend,
             either "process" or "thread".
+        df_threshold (int, optional): Document frequency threshold for
+            SQL-backed builds.  Terms appearing in at least this many
+            distinct documents are removed before vectors are computed.
 
     Returns:
         Index: The populated Index ready to search against.
@@ -45,6 +49,8 @@ def lunr(
     builder = builder or get_default_builder(languages)
     if storage is not None:
         builder.storage(storage)
+    if df_threshold is not None:
+        builder.df_threshold(df_threshold)
     if workers is not None and storage is not None:
         try:
             if (
