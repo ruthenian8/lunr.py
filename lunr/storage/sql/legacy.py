@@ -28,14 +28,16 @@ DIALECTS = {
 }
 
 
-class SqlStorage:
+class _LegacySqlStorage:
+    """Former package facade retained only for the temporary V1 implementation."""
+
     def __init__(self, conn, index_name: str, dialect: str = "sqlite") -> None:
         self.conn = conn
         self.index_name = index_name
         self.dialect = DIALECTS[dialect]
 
     @classmethod
-    def from_url(cls, url: str, index_name: str) -> "SqlStorage":
+    def from_url(cls, url: str, index_name: str) -> "_LegacySqlStorage":
         parsed = urlparse(url)
         if parsed.scheme == "sqlite":
             import sqlite3
@@ -96,7 +98,9 @@ class SqlStorage:
         raise ValueError("Unsupported SQL URL scheme")
 
     @classmethod
-    def from_conn(cls, conn, index_name: str, dialect: str = "sqlite") -> "SqlStorage":
+    def from_conn(
+        cls, conn, index_name: str, dialect: str = "sqlite"
+    ) -> "_LegacySqlStorage":
         return cls(conn=conn, index_name=index_name, dialect=dialect)
 
     def _ph(self, n: int) -> str:
@@ -228,11 +232,11 @@ class SqlStorage:
 
 
 class SqlIndexWriter:
-    def __init__(self, storage: SqlStorage) -> None:
+    def __init__(self, storage: Any) -> None:
         self.storage = storage
         self.conn = storage.conn
         self.index_name = storage.index_name
-        self.storage.ensure_schema()
+        _LegacySqlStorage.ensure_schema(storage)
 
     def _upsert(
         self,
@@ -620,7 +624,7 @@ class SqlIndexWriter:
 
 
 class SqlIndexReader:
-    def __init__(self, storage: SqlStorage) -> None:
+    def __init__(self, storage: Any) -> None:
         self.storage = storage
         self.conn = storage.conn
         self.index_name = storage.index_name
