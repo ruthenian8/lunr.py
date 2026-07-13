@@ -35,6 +35,50 @@ def test_dialect_metadata(lookup, expected):
 
 
 @pytest.mark.parametrize(
+    "name, begin_write_sql, lock_suffix",
+    [
+        ("sqlite", "BEGIN IMMEDIATE", ""),
+        ("postgresql", None, " FOR UPDATE"),
+        ("mysql", None, " FOR UPDATE"),
+    ],
+)
+def test_dialect_logical_index_locking(name, begin_write_sql, lock_suffix):
+    dialect = get_dialect(name)
+    assert dialect.begin_write_sql == begin_write_sql
+    assert dialect.row_lock_suffix == lock_suffix
+
+
+class SyntheticDatabaseError(Exception):
+    def __init__(self, *args, sqlstate=None, pgcode=None):
+        super().__init__(*args)
+        self.sqlstate = sqlstate
+        self.pgcode = pgcode
+
+
+@pytest.mark.parametrize(
+    "name, error, expected",
+    [
+        ("sqlite", Exception("no such table: docs"), True),
+        ("sqlite", Exception("not authorized"), False),
+        (
+            "postgresql",
+            SyntheticDatabaseError("undefined", sqlstate="42P01"),
+            True,
+        ),
+        (
+            "postgresql",
+            SyntheticDatabaseError("denied", pgcode="42501"),
+            False,
+        ),
+        ("mysql", SyntheticDatabaseError(1146, "table missing"), True),
+        ("mysql", SyntheticDatabaseError(1142, "permission denied"), False),
+    ],
+)
+def test_dialect_classifies_only_undefined_table_errors(name, error, expected):
+    assert get_dialect(name).is_undefined_table_error(error) is expected
+
+
+@pytest.mark.parametrize(
     "name, count, expected",
     [
         ("sqlite", 3, "?, ?, ?"),
@@ -125,7 +169,9 @@ def test_postgresql_url_falls_back_to_psycopg2(monkeypatch):
 def test_mysql_url_prefers_pymysql(monkeypatch):
     connection = object()
     calls = []
-    pymysql = SimpleNamespace(connect=lambda **kwargs: calls.append(kwargs) or connection)
+    pymysql = SimpleNamespace(
+        connect=lambda **kwargs: calls.append(kwargs) or connection
+    )
     mysql_db = SimpleNamespace(
         connect=lambda **kwargs: pytest.fail("MySQLdb fallback should not be used")
     )
@@ -150,7 +196,9 @@ def test_mysql_url_prefers_pymysql(monkeypatch):
 def test_mysql_url_falls_back_to_mysqldb(monkeypatch):
     connection = object()
     calls = []
-    mysql_db = SimpleNamespace(connect=lambda **kwargs: calls.append(kwargs) or connection)
+    mysql_db = SimpleNamespace(
+        connect=lambda **kwargs: calls.append(kwargs) or connection
+    )
     monkeypatch.setitem(sys.modules, "pymysql", None)
     monkeypatch.setitem(sys.modules, "MySQLdb", mysql_db)
 

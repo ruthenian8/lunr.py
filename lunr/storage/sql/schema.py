@@ -35,6 +35,11 @@ class Generation:
 def ensure_schema(conn, dialect) -> None:
     """Create the complete V2 schema without modifying V1 tables."""
     key = dialect.key_type
+    index_name = dialect.index_name_type
+    generation = dialect.generation_type
+    term = dialect.term_type
+    field = dialect.field_name_type
+    reference = dialect.reference_type
     json_type = dialect.json_type
     real = dialect.real_type
     cursor = conn.cursor()
@@ -42,9 +47,9 @@ def ensure_schema(conn, dialect) -> None:
         cursor.execute(
             f"""
             CREATE TABLE IF NOT EXISTS lunr_v2_indexes (
-                index_name {key} NOT NULL,
+                index_name {index_name} NOT NULL,
                 schema_version INTEGER NOT NULL,
-                active_generation {key},
+                active_generation {generation},
                 fields {json_type},
                 languages {json_type},
                 build_metadata {json_type},
@@ -55,8 +60,8 @@ def ensure_schema(conn, dialect) -> None:
         cursor.execute(
             f"""
             CREATE TABLE IF NOT EXISTS lunr_v2_generations (
-                index_name {key} NOT NULL,
-                generation {key} NOT NULL,
+                index_name {index_name} NOT NULL,
+                generation {generation} NOT NULL,
                 state {key} NOT NULL,
                 fields {json_type} NOT NULL,
                 languages {json_type} NOT NULL,
@@ -71,9 +76,9 @@ def ensure_schema(conn, dialect) -> None:
         cursor.execute(
             f"""
             CREATE TABLE IF NOT EXISTS lunr_v2_terms (
-                index_name {key} NOT NULL,
-                generation {key} NOT NULL,
-                term {key} NOT NULL,
+                index_name {index_name} NOT NULL,
+                generation {generation} NOT NULL,
+                term {term} NOT NULL,
                 term_index INTEGER NOT NULL,
                 PRIMARY KEY (index_name, generation, term)
             )
@@ -82,11 +87,11 @@ def ensure_schema(conn, dialect) -> None:
         cursor.execute(
             f"""
             CREATE TABLE IF NOT EXISTS lunr_v2_postings (
-                index_name {key} NOT NULL,
-                generation {key} NOT NULL,
-                term {key} NOT NULL,
-                field {key} NOT NULL,
-                doc_ref {key} NOT NULL,
+                index_name {index_name} NOT NULL,
+                generation {generation} NOT NULL,
+                term {term} NOT NULL,
+                field {field} NOT NULL,
+                doc_ref {reference} NOT NULL,
                 metadata {json_type} NOT NULL,
                 PRIMARY KEY (index_name, generation, term, field, doc_ref)
             )
@@ -95,11 +100,11 @@ def ensure_schema(conn, dialect) -> None:
         cursor.execute(
             f"""
             CREATE TABLE IF NOT EXISTS lunr_v2_field_vectors (
-                index_name {key} NOT NULL,
-                generation {key} NOT NULL,
-                field_ref {key} NOT NULL,
-                field {key} NOT NULL,
-                doc_ref {key} NOT NULL,
+                index_name {index_name} NOT NULL,
+                generation {generation} NOT NULL,
+                field_ref {reference} NOT NULL,
+                field {field} NOT NULL,
+                doc_ref {reference} NOT NULL,
                 elements {json_type} NOT NULL,
                 magnitude {real} NOT NULL,
                 PRIMARY KEY (index_name, generation, field_ref)
@@ -109,11 +114,11 @@ def ensure_schema(conn, dialect) -> None:
         cursor.execute(
             f"""
             CREATE TABLE IF NOT EXISTS lunr_v2_doc_fields (
-                index_name {key} NOT NULL,
-                generation {key} NOT NULL,
-                field_ref {key} NOT NULL,
-                field {key} NOT NULL,
-                doc_ref {key} NOT NULL,
+                index_name {index_name} NOT NULL,
+                generation {generation} NOT NULL,
+                field_ref {reference} NOT NULL,
+                field {field} NOT NULL,
+                doc_ref {reference} NOT NULL,
                 length INTEGER NOT NULL,
                 boost {real} NOT NULL DEFAULT 1,
                 PRIMARY KEY (index_name, generation, field_ref)
@@ -123,10 +128,10 @@ def ensure_schema(conn, dialect) -> None:
         cursor.execute(
             f"""
             CREATE TABLE IF NOT EXISTS lunr_v2_term_frequencies (
-                index_name {key} NOT NULL,
-                generation {key} NOT NULL,
-                field_ref {key} NOT NULL,
-                term {key} NOT NULL,
+                index_name {index_name} NOT NULL,
+                generation {generation} NOT NULL,
+                field_ref {reference} NOT NULL,
+                term {term} NOT NULL,
                 tf INTEGER NOT NULL,
                 PRIMARY KEY (index_name, generation, field_ref, term)
             )
@@ -171,6 +176,7 @@ def activate_generation(conn, dialect, index_name, generation) -> None:
     placeholder = dialect.placeholder
     cursor = conn.cursor()
     try:
+        _lock_logical_index(cursor, dialect, index_name)
         cursor.execute(
             "UPDATE lunr_v2_generations SET state='ready' "
             f"WHERE index_name={placeholder} AND generation={placeholder} "
@@ -185,13 +191,10 @@ def activate_generation(conn, dialect, index_name, generation) -> None:
             (index_name,),
         )
         cursor.execute(
-            dialect.upsert_sql(
-                "lunr_v2_indexes",
-                ["index_name", "schema_version", "active_generation"],
-                ["index_name"],
-                ["schema_version", "active_generation"],
-            ),
-            (index_name, SCHEMA_VERSION, generation),
+            "UPDATE lunr_v2_indexes SET "
+            f"schema_version={placeholder}, active_generation={placeholder} "
+            f"WHERE index_name={placeholder}",
+            (SCHEMA_VERSION, generation, index_name),
         )
         cursor.execute(
             "UPDATE lunr_v2_generations SET state='active' "
@@ -227,8 +230,8 @@ def fail_generation(conn, dialect, index_name, generation, error) -> None:
 
 def get_active_generation(conn, dialect, index_name) -> Optional[Generation]:
     """Return stored metadata for the active generation, if there is one."""
-    if not _table_exists(conn, "lunr_v2_indexes"):
-        if any(_table_exists(conn, table) for table in _V1_TABLES):
+    if not _table_exists(conn, dialect, "lunr_v2_indexes"):
+        if any(_table_exists(conn, dialect, table) for table in _V1_TABLES):
             raise SqlRebuildRequiredError(
                 "This database contains a V1 Lunr SQL index; rebuild it for V2"
             )
@@ -265,12 +268,8 @@ def cleanup_generation(conn, dialect, index_name, generation) -> None:
     placeholder = dialect.placeholder
     cursor = conn.cursor()
     try:
-        cursor.execute(
-            "SELECT 1 FROM lunr_v2_indexes "
-            f"WHERE index_name={placeholder} AND active_generation={placeholder}",
-            (index_name, generation),
-        )
-        if cursor.fetchone() is not None:
+        active_generation = _lock_logical_index(cursor, dialect, index_name)
+        if active_generation == generation:
             raise ValueError("Cannot clean up the active generation")
         for table in (
             "lunr_v2_postings",
@@ -293,18 +292,43 @@ def cleanup_generation(conn, dialect, index_name, generation) -> None:
         cursor.close()
 
 
-def _table_exists(conn, table_name) -> bool:
+def _lock_logical_index(cursor, dialect, index_name):
+    """Create and lock one logical-index row for a lifecycle transaction."""
+    if dialect.begin_write_sql is not None:
+        cursor.execute(dialect.begin_write_sql)
+    cursor.execute(
+        dialect.upsert_sql(
+            "lunr_v2_indexes",
+            ["index_name", "schema_version", "active_generation"],
+            ["index_name"],
+            ["schema_version"],
+        ),
+        (index_name, SCHEMA_VERSION, None),
+    )
+    cursor.execute(
+        "SELECT active_generation FROM lunr_v2_indexes "
+        f"WHERE index_name={dialect.placeholder}{dialect.row_lock_suffix}",
+        (index_name,),
+    )
+    row = cursor.fetchone()
+    return None if row is None else row[0]
+
+
+def _table_exists(conn, dialect, table_name) -> bool:
     """Probe a fixed internal table name without leaving a failed transaction."""
     cursor = conn.cursor()
     try:
         cursor.execute("SAVEPOINT lunr_v2_schema_probe")
         try:
             cursor.execute(f"SELECT 1 FROM {table_name} WHERE 1=0")
-            exists = True
-        except Exception:
+        except Exception as error:
             cursor.execute("ROLLBACK TO SAVEPOINT lunr_v2_schema_probe")
-            exists = False
-        cursor.execute("RELEASE SAVEPOINT lunr_v2_schema_probe")
-        return exists
+            cursor.execute("RELEASE SAVEPOINT lunr_v2_schema_probe")
+            if dialect.is_undefined_table_error(error):
+                return False
+            raise
+        else:
+            cursor.execute("RELEASE SAVEPOINT lunr_v2_schema_probe")
+            return True
     finally:
         cursor.close()
