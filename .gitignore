@@ -21,6 +21,7 @@ docs/_build
 .python-version
 .DS_Store
 .benchmarks/
+.worktrees/
 *TODO.md
 tests/profiles/
 .mypy_cache/
