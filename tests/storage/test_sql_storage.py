@@ -2,6 +2,7 @@ import sqlite3
 
 import pytest
 
+from lunr import lunr
 from lunr.storage.sql import SqlRebuildRequiredError, SqlStorage
 
 
@@ -40,3 +41,23 @@ def test_v1_only_database_requires_rebuild(v1_connection):
 
     with pytest.raises(SqlRebuildRequiredError, match="rebuild"):
         storage.reader()
+
+
+def test_temporary_legacy_writer_reader_lifecycle_is_scoped_to_one_facade():
+    connection = sqlite3.connect(":memory:")
+    storage = SqlStorage.from_conn(connection, "docs")
+    try:
+        index = lunr(
+            ref="id",
+            fields=("title",),
+            documents=[{"id": "1", "title": "green plant"}],
+            storage=storage,
+        )
+
+        assert [result["ref"] for result in index.search("green")] == ["1"]
+
+        reopened = SqlStorage.from_conn(connection, "docs")
+        with pytest.raises(SqlRebuildRequiredError, match="rebuild"):
+            reopened.reader()
+    finally:
+        connection.close()

@@ -18,6 +18,7 @@ class SqlStorage:
         self.index_name = index_name
         self.dialect = get_dialect(dialect) if isinstance(dialect, str) else dialect
         self.owns_connection = owns_connection
+        self._legacy_write_requested = False
 
     @classmethod
     def from_url(cls, url: str, index_name: str) -> "SqlStorage":
@@ -31,10 +32,12 @@ class SqlStorage:
         return cls(conn, index_name, dialect, owns_connection=False)
 
     def writer(self) -> SqlIndexWriter:
+        self._legacy_write_requested = True
         return SqlIndexWriter(self)
 
     def reader(self) -> SqlIndexReader:
-        get_active_generation(self.conn, self.dialect, self.index_name)
+        if not self._legacy_write_requested:
+            get_active_generation(self.conn, self.dialect, self.index_name)
         return SqlIndexReader(self)
 
     def close(self) -> None:

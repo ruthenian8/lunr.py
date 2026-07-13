@@ -35,6 +35,18 @@ def test_dialect_metadata(lookup, expected):
 
 
 @pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("sqlite", "replace"),
+        ("postgresql", "conflict"),
+        ("mysql", "duplicate"),
+    ],
+)
+def test_dialect_exposes_legacy_upsert_mode(name, expected):
+    assert get_dialect(name).upsert == expected
+
+
+@pytest.mark.parametrize(
     "name, begin_write_sql, lock_suffix",
     [
         ("sqlite", "BEGIN IMMEDIATE", ""),
