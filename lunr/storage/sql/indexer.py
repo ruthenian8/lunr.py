@@ -16,7 +16,6 @@ from .schema import (
     cleanup_generation,
     ensure_schema,
     fail_generation,
-    get_active_generation,
 )
 
 
@@ -112,7 +111,6 @@ class SqlIndexer:
             raise ValueError("backend must be either 'process' or 'thread'")
         field_names = [field[0] for field in fields]
         ensure_schema(self.conn, self.dialect)
-        previous = get_active_generation(self.conn, self.dialect, self.index_name)
         generation = begin_generation(
             self.conn, self.dialect, self.index_name, field_names, languages
         )
@@ -149,7 +147,7 @@ class SqlIndexer:
             raise
 
         try:
-            self._clean_after_activation(generation, previous)
+            self._clean_after_activation(generation)
         except Exception as error:
             self.conn.rollback()
             warnings.warn(
@@ -487,7 +485,7 @@ class SqlIndexer:
         finally:
             cursor.close()
 
-    def _clean_after_activation(self, generation, previous):
+    def _clean_after_activation(self, generation):
         cursor = self.conn.cursor()
         try:
             for table in ("lunr_v2_doc_fields", "lunr_v2_term_frequencies"):
@@ -499,10 +497,6 @@ class SqlIndexer:
             self.conn.commit()
         finally:
             cursor.close()
-        if previous is not None and previous.generation != generation:
-            cleanup_generation(
-                self.conn, self.dialect, self.index_name, previous.generation
-            )
 
 
 class _ExecutorRecords:

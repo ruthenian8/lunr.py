@@ -12,6 +12,7 @@ from lunr.integrations.flask import (
     create_app,
     sql_lunr_index,
 )
+from lunr.storage.sql import SqlRebuildRequiredError
 
 
 class _TrackingConnection:
@@ -114,6 +115,58 @@ def test_rebuild_failure_preserves_searchable_index(tmp_path):
         assert _refs(idx, "first") == ["1"]
 
 
+def test_reader_pinned_before_rebuild_remains_searchable(tmp_path):
+    db = _DB(tmp_path / "site.db")
+    build_or_rebuild_index(
+        db, "site", [{"id": "1", "title": "old", "body": "generation"}]
+    )
+
+    with sql_lunr_index(db, "site") as pinned:
+        build_or_rebuild_index(
+            db, "site", [{"id": "2", "title": "new", "body": "generation"}]
+        )
+        assert _refs(pinned, "old") == ["1"]
+
+    with sql_lunr_index(db, "site") as current:
+        assert _refs(current, "new") == ["2"]
+
+
+def test_sqlite_streaming_source_can_cross_index_flush_boundary(tmp_path):
+    path = tmp_path / "site.db"
+    source = sqlite3.connect(path)
+    source.execute("CREATE TABLE source_docs (id TEXT, title TEXT, body TEXT)")
+    source.executemany(
+        "INSERT INTO source_docs VALUES (?, ?, ?)",
+        [(str(index), f"title {index}", "streamed body") for index in range(12)],
+    )
+    source.commit()
+    db = _DB(path)
+
+    def documents():
+        cursor = source.cursor()
+        try:
+            cursor.execute("SELECT id, title, body FROM source_docs ORDER BY id")
+            while True:
+                rows = cursor.fetchmany(2)
+                if not rows:
+                    break
+                for doc_ref, title, body in rows:
+                    yield {"id": doc_ref, "title": title, "body": body}
+        finally:
+            cursor.close()
+
+    stream = documents()
+    try:
+        build_or_rebuild_index(db, "site", stream, row_batch_size=3)
+        assert source.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    finally:
+        stream.close()
+        source.close()
+
+    with sql_lunr_index(db, "site") as idx:
+        assert len(idx.search("streamed")) == 12
+
+
 def test_rebuilding_one_index_does_not_delete_another(tmp_path):
     db = _DB(tmp_path / "site.db")
     build_or_rebuild_index(
@@ -144,6 +197,20 @@ def test_sql_lunr_index_handles_fresh_database_without_existing_tables(tmp_path)
 
     with sql_lunr_index(db, "site_search") as idx:
         assert idx.search("anything") == []
+
+
+def test_sql_lunr_index_rejects_v1_only_database(tmp_path):
+    db = _DB(tmp_path / "legacy.db")
+    conn = sqlite3.connect(tmp_path / "legacy.db")
+    try:
+        conn.execute("CREATE TABLE lunr_terms (marker INTEGER)")
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(SqlRebuildRequiredError, match="rebuild"):
+        with sql_lunr_index(db, "site"):
+            pass
 
 
 def test_sql_lunr_index_loads_stored_fields_for_empty_index(tmp_path):

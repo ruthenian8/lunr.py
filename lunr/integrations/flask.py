@@ -47,8 +47,8 @@ def sql_lunr_index(
     try:
         dialect = _dialect_name_from_engine(db.engine)
         storage = SqlStorage.from_conn(conn, index_name=index_name, dialect=dialect)
-        ensure_schema(conn, storage.dialect)
         active = get_active_generation(conn, storage.dialect, index_name)
+        ensure_schema(conn, storage.dialect)
         if active is None:
             yield Index(
                 inverted_index={},
@@ -114,6 +114,13 @@ def build_or_rebuild_index(
     try:
         dialect = _dialect_name_from_engine(db.engine)
         storage = SqlStorage.from_conn(conn, index_name=index_name, dialect=dialect)
+        if storage.dialect.name == "sqlite":
+            cursor = conn.cursor()
+            try:
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.fetchone()
+            finally:
+                cursor.close()
         builder = get_default_builder(languages)
         SqlIndexer(storage).build(
             documents,

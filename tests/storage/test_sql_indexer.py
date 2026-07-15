@@ -182,22 +182,23 @@ def test_parallel_submission_is_bounded():
     assert list(results) == [value * 2 for value in range(1, 20)]
 
 
-def test_cleanup_failure_after_activation_keeps_new_index_active(
-    sqlite_storage, monkeypatch
-):
-    lunr("id", ("title",), [{"id": "1", "title": "old"}], storage=sqlite_storage)
+def test_successful_rebuild_retains_previous_generation(sqlite_storage, monkeypatch):
+    pinned = lunr(
+        "id", ("title",), [{"id": "1", "title": "old"}], storage=sqlite_storage
+    )
+    cleanup_calls = []
 
-    def fail_cleanup(*args, **kwargs):
-        raise RuntimeError("cleanup failed")
+    def record_cleanup(*args, **kwargs):
+        cleanup_calls.append((args, kwargs))
 
-    monkeypatch.setattr("lunr.storage.sql.indexer.cleanup_generation", fail_cleanup)
-    with pytest.warns(RuntimeWarning, match="activated.*cleanup failed"):
-        index = lunr(
-            "id", ("title",), [{"id": "2", "title": "new"}], storage=sqlite_storage
-        )
+    monkeypatch.setattr("lunr.storage.sql.indexer.cleanup_generation", record_cleanup)
+    current = lunr(
+        "id", ("title",), [{"id": "2", "title": "new"}], storage=sqlite_storage
+    )
 
-    assert [hit["ref"] for hit in index.search("new")] == ["2"]
-    assert sqlite_storage.open_index().search("old") == []
+    assert cleanup_calls == []
+    assert [hit["ref"] for hit in pinned.search("old")] == ["1"]
+    assert [hit["ref"] for hit in current.search("new")] == ["2"]
 
 
 def test_empty_vectors_flush_in_bounded_batches(sqlite_storage, monkeypatch):
