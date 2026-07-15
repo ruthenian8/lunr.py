@@ -5,8 +5,9 @@ from uuid import uuid4
 
 import pytest
 
-from lunr import lunr
+from lunr import get_default_builder, lunr
 from lunr.storage.sql import SqlStorage
+from lunr.storage.sql.indexer import SqlIndexer
 from lunr.storage.sql.schema import get_active_generation
 
 
@@ -86,8 +87,10 @@ def _backend_harness(environment_variable, backend):
     try:
         yield harness
     finally:
-        _cleanup(harness)
-        storage.close()
+        try:
+            _cleanup(harness)
+        finally:
+            storage.close()
 
 
 @pytest.fixture
@@ -110,13 +113,20 @@ def sqlite_backend_storage():
     try:
         yield harness
     finally:
-        _cleanup(harness)
-        connection.close()
+        try:
+            _cleanup(harness)
+        finally:
+            connection.close()
 
 
 @pytest.fixture
 def backend_contract():
     return assert_backend_contract
+
+
+@pytest.fixture
+def backend_harness_factory():
+    return _backend_harness
 
 
 def _result_scores(index, query):
@@ -133,8 +143,14 @@ def assert_backend_contract(harness, documents):
         }
     ]
     memory = lunr("id", ("title", "body"), contract_documents)
-    pinned = lunr(
-        "id", ("title", "body"), iter(contract_documents), storage=primary
+    default_builder = get_default_builder()
+    pinned = SqlIndexer(primary).build(
+        iter(contract_documents),
+        "id",
+        [("title", 1, None), ("body", 1, None)],
+        {"languages": []},
+        ["position"],
+        search_pipeline=default_builder.search_pipeline,
     )
 
     active = get_active_generation(primary.conn, primary.dialect, primary.index_name)
@@ -147,7 +163,7 @@ def assert_backend_contract(harness, documents):
     )
 
     posting = primary.reader().get_postings(["green"])["green"]
-    assert isinstance(posting["title"]["a"], dict)
+    assert posting["title"]["a"]["position"]
     assert primary.reader().expand_terms("100%*") == ["100%real"]
     assert primary.reader().expand_terms("100_*") == ["100_percent"]
     assert primary.reader().expand_terms("bang!*") == ["bang!token"]
