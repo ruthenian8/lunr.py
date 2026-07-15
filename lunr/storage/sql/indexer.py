@@ -195,9 +195,10 @@ class SqlIndexer:
         executor_class = (
             ProcessPoolExecutor if selected_backend == "process" else ThreadPoolExecutor
         )
-        executor = executor_class(max_workers=max(1, min(int(workers), 10)))
+        max_workers = max(1, min(int(workers), 10))
+        executor = executor_class(max_workers=max_workers)
         records = _bounded_map(
-            executor, _process_document, payloads, max(2, int(workers) * 2)
+            executor, _process_document, payloads, max_workers * 2
         )
         return _ExecutorRecords(executor, records)
 

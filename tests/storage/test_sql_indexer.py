@@ -72,8 +72,12 @@ def test_sql_scoring_matches_memory(documents, backend):
         assert not [
             warning for warning in caught if "falling back" in str(warning.message)
         ]
-        assert [result["ref"] for result in sql.search("green study")] == [
-            result["ref"] for result in memory.search("green study")
+        assert [
+            (result["ref"], result["score"])
+            for result in sql.search("green study")
+        ] == [
+            (result["ref"], result["score"])
+            for result in memory.search("green study")
         ]
     finally:
         connection.close()
