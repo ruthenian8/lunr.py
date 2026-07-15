@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import lunr as lunr_package
 import lunr.integrations.flask as flask_integration
 from lunr.integrations.flask import (
     _dialect_name_from_engine,
@@ -235,13 +236,13 @@ def test_sql_lunr_index_uses_stored_languages(monkeypatch, documents, tmp_path):
         conn.close()
 
     requested = []
-    real_get_default_builder = flask_integration.get_default_builder
+    real_get_default_builder = lunr_package.get_default_builder
 
     def recording_builder(languages):
         requested.append(languages)
         return real_get_default_builder(None)
 
-    monkeypatch.setattr(flask_integration, "get_default_builder", recording_builder)
+    monkeypatch.setattr(lunr_package, "get_default_builder", recording_builder)
     with sql_lunr_index(db, "site_search"):
         pass
 
