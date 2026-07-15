@@ -109,6 +109,27 @@ class SqlIndexReader:
             cursor.close()
         return vectors
 
+    def get_posting(self, term):
+        return self.get_postings([term]).get(term, {"_index": -1})
+
+    def get_field_vector(self, field_ref):
+        return self.get_field_vectors([field_ref]).get(field_ref, Vector())
+
+    def iter_all_field_refs(self):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT field_ref FROM lunr_v2_field_vectors "
+                f"WHERE index_name={self.dialect.placeholder} "
+                f"AND generation={self.dialect.placeholder}",
+                (self.index_name, self.generation),
+            )
+            rows = cursor.fetchall()
+        finally:
+            cursor.close()
+        for (field_ref,) in rows:
+            yield field_ref
+
     def iter_doc_fields(self):
         cursor = self.conn.cursor()
         try:

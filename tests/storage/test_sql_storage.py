@@ -2,8 +2,8 @@ import sqlite3
 
 import pytest
 
-from lunr import lunr
 from lunr.storage.sql import SqlRebuildRequiredError, SqlStorage
+from lunr.vector import Vector
 
 
 @pytest.fixture
@@ -47,14 +47,13 @@ def test_temporary_legacy_writer_reader_lifecycle_is_scoped_to_one_facade():
     connection = sqlite3.connect(":memory:")
     storage = SqlStorage.from_conn(connection, "docs")
     try:
-        index = lunr(
-            ref="id",
-            fields=("title",),
-            documents=[{"id": "1", "title": "green plant"}],
-            storage=storage,
-        )
+        writer = storage.writer()
+        writer.upsert_term("green", 0)
+        writer.upsert_posting("green", "title", "1", {})
+        writer.upsert_field_vector("title/1", "title", "1", Vector([0, 1]))
+        writer.commit()
 
-        assert [result["ref"] for result in index.search("green")] == ["1"]
+        assert storage.reader().get_posting("green")["title"] == {"1": {}}
 
         reopened = SqlStorage.from_conn(connection, "docs")
         with pytest.raises(SqlRebuildRequiredError, match="rebuild"):

@@ -49,6 +49,23 @@ class SqlStorage:
             raise ValueError(f"No active SQL index named {self.index_name!r}")
         return V2SqlIndexReader(self, active.generation)
 
+    def open_index(self):
+        if not hasattr(self, "_index_fields") or not hasattr(
+            self, "_search_pipeline"
+        ):
+            raise ValueError("Index configuration is not available on this storage")
+        from lunr.index import Index
+
+        reader = self.reader()
+        return Index(
+            inverted_index=SqlInvertedIndexProxy(reader),
+            field_vectors=SqlFieldVectorsProxy(reader),
+            token_set=None,
+            fields=self._index_fields,
+            pipeline=self._search_pipeline,
+            storage_reader=reader,
+        )
+
     def close(self) -> None:
         if self.owns_connection:
             self.conn.close()

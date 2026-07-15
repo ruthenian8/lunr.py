@@ -112,14 +112,12 @@ def mysql_storage():
 
 
 def _build_sql_index(documents, storage):
-    builder = get_default_builder()
-    builder.ref("id")
-    builder.field("title")
-    builder.field("body")
-    builder.storage(storage)
-    for document in documents:
-        builder.add(document)
-    return builder.build()
+    return lunr(
+        ref="id",
+        fields=("title", "body"),
+        documents=iter(documents),
+        storage=storage,
+    )
 
 
 def test_sql_backend_matches_memory_for_positive_queries(documents, sql_storage):
@@ -483,148 +481,99 @@ def test_df_threshold_via_lunr_convenience(documents):
 
 def test_df_threshold_removes_term_rows_from_sql_tables(documents):
     storage = _sqlite_storage("df-rows")
-    builder = get_default_builder()
-    builder.ref("id")
-    builder.field("title")
-    builder.field("body")
-    builder.storage(storage)
-    builder.sql_flush(enabled=True, doc_batch_size=10, row_batch_size=100)
-    builder.df_threshold(3)
-    for doc in documents:
-        builder.add(doc)
-    builder.build()
+    lunr("id", ("title", "body"), iter(documents), storage=storage, df_threshold=3)
+    generation = storage.reader().generation
 
     c = storage.conn.cursor()
     c.execute(
-        "SELECT COUNT(*) FROM lunr_terms WHERE index_name = ? AND term = ?",
-        (storage.index_name, "green"),
+        "SELECT COUNT(*) FROM lunr_v2_terms "
+        "WHERE index_name = ? AND generation = ? AND term = ?",
+        (storage.index_name, generation, "green"),
     )
     assert c.fetchone()[0] == 0
 
     c.execute(
-        "SELECT COUNT(*) FROM lunr_postings WHERE index_name = ? AND term = ?",
-        (storage.index_name, "green"),
+        "SELECT COUNT(*) FROM lunr_v2_postings "
+        "WHERE index_name = ? AND generation = ? AND term = ?",
+        (storage.index_name, generation, "green"),
     )
     assert c.fetchone()[0] == 0
 
     c.execute(
-        "SELECT COUNT(*) FROM lunr_term_frequencies WHERE index_name = ? AND term = ?",
-        (storage.index_name, "green"),
+        "SELECT COUNT(*) FROM lunr_v2_term_frequencies "
+        "WHERE index_name = ? AND generation = ? AND term = ?",
+        (storage.index_name, generation, "green"),
     )
     assert c.fetchone()[0] == 0
 
 
-def test_df_threshold_adjusts_doc_field_lengths_in_sql(documents):
-    """After purge, lunr_doc_fields.length reflects only surviving terms."""
+def test_sql_indexer_cleans_build_time_rows_after_activation(documents):
     storage = _sqlite_storage("df-lengths")
-    builder = get_default_builder()
-    builder.ref("id")
-    builder.field("title")
-    builder.field("body")
-    builder.storage(storage)
-    builder.sql_flush(enabled=True, doc_batch_size=10, row_batch_size=100)
-    builder.df_threshold(3)
-    for doc in documents:
-        builder.add(doc)
-    builder.build()
+    lunr("id", ("title", "body"), iter(documents), storage=storage, df_threshold=3)
+    generation = storage.reader().generation
 
     c = storage.conn.cursor()
-    # For every field_ref, stored length must equal sum of surviving tf values.
-    c.execute(
-        "SELECT d.field_ref, d.length, COALESCE(t.total, 0) "
-        "FROM lunr_doc_fields d "
-        "LEFT JOIN ("
-        "  SELECT field_ref, SUM(tf) AS total "
-        "  FROM lunr_term_frequencies WHERE index_name = ? GROUP BY field_ref"
-        ") t ON d.field_ref = t.field_ref "
-        "WHERE d.index_name = ?",
-        (storage.index_name, storage.index_name),
-    )
-    for field_ref, stored_len, tf_sum in c.fetchall():
-        assert stored_len == tf_sum, (
-            f"{field_ref}: stored length {stored_len} != tf sum {tf_sum}"
+    for table in ("lunr_v2_doc_fields", "lunr_v2_term_frequencies"):
+        c.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE index_name=? AND generation=?",
+            (storage.index_name, generation),
         )
+        assert c.fetchone()[0] == 0
 
 
 def test_df_threshold_vectors_agree_across_all_build_paths(documents):
-    """Standard, parallel, incremental, and parallel-incremental must produce
-    the same field vectors when the same df_threshold is applied."""
+    """Sequential, thread, and process indexers produce identical vectors."""
     import json
 
-    def _build(label, parallel=False, incremental=False):
+    def _build(label, backend=None):
         st = _sqlite_storage(label)
-        b = get_default_builder()
-        b.ref("id")
-        b.field("title")
-        b.field("body")
-        b.storage(st)
-        b.df_threshold(3)
-        if parallel:
-            b.parallel(workers=2, backend="thread")
-        if incremental:
-            b.sql_flush(enabled=True, doc_batch_size=1, row_batch_size=2)
-        for d in documents:
-            b.add(d)
-        b.build()
-        # Read back all field vectors from DB so we can compare.
+        lunr(
+            "id",
+            ("title", "body"),
+            iter(documents),
+            storage=st,
+            df_threshold=3,
+            workers=2 if backend else None,
+            parallel_backend=backend or "thread",
+        )
+        generation = st.reader().generation
         c = st.conn.cursor()
         c.execute(
-            "SELECT field_ref, elements FROM lunr_field_vectors "
-            "WHERE index_name = ? ORDER BY field_ref",
-            (st.index_name,),
+            "SELECT field_ref, elements FROM lunr_v2_field_vectors "
+            "WHERE index_name = ? AND generation = ? ORDER BY field_ref",
+            (st.index_name, generation),
         )
         return {fr: json.loads(elems) for fr, elems in c.fetchall()}
 
     standard = _build("std")
-    parallel = _build("par", parallel=True)
-    incremental = _build("inc", incremental=True)
-    par_inc = _build("pi", parallel=True, incremental=True)
+    thread = _build("thread", backend="thread")
+    process = _build("process", backend="process")
 
-    assert standard == parallel
-    assert standard == incremental
-    assert standard == par_inc
+    assert standard == thread
+    assert standard == process
 
 
-def test_df_threshold_zeroes_fully_purged_field_lengths_in_sql():
-    """Fields that lose ALL terms after purge must have length 0 in SQL."""
+def test_df_threshold_creates_empty_vectors_for_fully_purged_fields():
     docs = [
         {"id": "a", "title": "common", "body": "unique alpha text"},
         {"id": "b", "title": "common", "body": "unique beta text"},
         {"id": "c", "title": "common", "body": "unique gamma text"},
     ]
 
-    def _build(label, incremental):
+    def _build(label):
         st = _sqlite_storage(label)
-        b = get_default_builder()
-        b.ref("id")
-        b.field("title")
-        b.field("body")
-        b.storage(st)
-        b.df_threshold(3)
-        if incremental:
-            b.sql_flush(enabled=True, doc_batch_size=10, row_batch_size=100)
-        for d in docs:
-            b.add(d)
-        b.build()
-
+        lunr("id", ("title", "body"), iter(docs), storage=st, df_threshold=3)
+        generation = st.reader().generation
         c = st.conn.cursor()
         c.execute(
-            "SELECT d.field_ref, d.length, COALESCE(t.total, 0) "
-            "FROM lunr_doc_fields d "
-            "LEFT JOIN ("
-            "  SELECT field_ref, SUM(tf) AS total "
-            "  FROM lunr_term_frequencies WHERE index_name = ? GROUP BY field_ref"
-            ") t ON d.field_ref = t.field_ref "
-            "WHERE d.index_name = ?",
-            (st.index_name, st.index_name),
+            "SELECT field_ref, elements FROM lunr_v2_field_vectors "
+            "WHERE index_name=? AND generation=? AND field_ref LIKE 'title/%'",
+            (st.index_name, generation),
         )
         return c.fetchall()
 
-    for label, incremental in [("zero-std", False), ("zero-inc", True)]:
-        for field_ref, stored_len, tf_sum in _build(label, incremental):
-            assert stored_len == tf_sum, (
-                f"{label} {field_ref}: stored length {stored_len} != tf sum {tf_sum}"
-            )
+    for field_ref, elements in _build("zero"):
+        assert elements == "[]", field_ref
 
 
 @pytest.mark.mysql
