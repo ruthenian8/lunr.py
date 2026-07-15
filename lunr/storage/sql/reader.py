@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 
 from lunr.vector import Vector
 
@@ -8,6 +10,21 @@ from .dialects import json_load
 
 
 MAX_PARAMETERS = 500
+
+
+@dataclass
+class QueryData:
+    reader: object
+    expanded_terms: dict
+    postings: dict
+    field_vectors: dict = field(default_factory=dict)
+    _vectors_loaded: bool = False
+
+    def load_field_vectors(self, refs):
+        if not self._vectors_loaded:
+            self.field_vectors = self.reader.get_field_vectors(refs)
+            self._vectors_loaded = True
+        return self.field_vectors
 
 
 class SqlIndexReader:
@@ -26,13 +43,19 @@ class SqlIndexReader:
             yield values[offset : offset + size]
 
     def expand_terms(self, patterns) -> list[str]:
+        expanded, indexes = self._expand_term_map(patterns)
+        terms = {term for values in expanded.values() for term in values}
+        return sorted(terms, key=indexes.__getitem__)
+
+    def _expand_term_map(self, patterns):
         if isinstance(patterns, str):
             patterns = [patterns]
         else:
-            patterns = list(patterns)
+            patterns = list(dict.fromkeys(patterns))
         exact = [pattern for pattern in patterns if "*" not in pattern]
         wildcard = [pattern for pattern in patterns if "*" in pattern]
-        matches = {}
+        expanded = {pattern: [] for pattern in patterns}
+        indexes = {}
         cursor = self.conn.cursor()
         try:
             for chunk in self._chunks(exact):
@@ -44,25 +67,49 @@ class SqlIndexReader:
                     f"AND term IN ({placeholders})",
                     (self.index_name, self.generation, *chunk),
                 )
-                matches.update(cursor.fetchall())
-            for pattern in wildcard:
-                escaped = (
+                for term, term_index in cursor.fetchall():
+                    expanded[term].append(term)
+                    indexes[term] = term_index
+            for chunk in self._chunks(wildcard):
+                escaped = [
                     pattern.replace("!", "!!")
                     .replace("%", "!%")
                     .replace("_", "!_")
                     .replace("*", "%")
+                    for pattern in chunk
+                ]
+                conditions = " OR ".join(
+                    f"term LIKE {self.dialect.placeholder} ESCAPE '!'"
+                    for _ in chunk
                 )
                 cursor.execute(
                     "SELECT term, term_index FROM lunr_v2_terms "
                     f"WHERE index_name={self.dialect.placeholder} "
                     f"AND generation={self.dialect.placeholder} "
-                    f"AND term LIKE {self.dialect.placeholder} ESCAPE '!'",
-                    (self.index_name, self.generation, escaped),
+                    f"AND ({conditions})",
+                    (self.index_name, self.generation, *escaped),
                 )
-                matches.update(cursor.fetchall())
+                rows = cursor.fetchall()
+                for term, term_index in rows:
+                    indexes[term] = term_index
+                rows.sort(key=lambda row: row[1])
+                for pattern in chunk:
+                    matcher = re.compile(
+                        "^" + re.escape(pattern).replace(r"\*", ".*") + "$"
+                    )
+                    expanded[pattern].extend(
+                        term for term, _ in rows if matcher.match(term)
+                    )
         finally:
             cursor.close()
-        return [term for term, _ in sorted(matches.items(), key=lambda item: item[1])]
+        return expanded, indexes
+
+    def prepare_query(self, patterns):
+        expanded, _ = self._expand_term_map(patterns)
+        terms = list(
+            dict.fromkeys(term for values in expanded.values() for term in values)
+        )
+        return QueryData(self, expanded, self.get_postings(terms))
 
     def get_postings(self, terms) -> dict:
         postings = {}
