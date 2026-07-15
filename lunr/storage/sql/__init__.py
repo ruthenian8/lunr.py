@@ -7,7 +7,9 @@ from .legacy import (
     SqlIndexWriter,
     SqlInvertedIndexProxy,
 )
+from .reader import SqlIndexReader as V2SqlIndexReader
 from .schema import SqlRebuildRequiredError, get_active_generation
+from .writer import SqlIndexWriter as V2SqlIndexWriter
 
 
 class SqlStorage:
@@ -19,6 +21,7 @@ class SqlStorage:
         self.dialect = get_dialect(dialect) if isinstance(dialect, str) else dialect
         self.owns_connection = owns_connection
         self._legacy_write_requested = False
+        self._v2_generation = None
 
     @classmethod
     def from_url(cls, url: str, index_name: str) -> "SqlStorage":
@@ -31,14 +34,22 @@ class SqlStorage:
     ) -> "SqlStorage":
         return cls(conn, index_name, dialect, owns_connection=False)
 
-    def writer(self) -> SqlIndexWriter:
+    def writer(self, generation=None):
+        if generation is not None:
+            self._v2_generation = generation
+            return V2SqlIndexWriter(self, generation)
         self._legacy_write_requested = True
         return SqlIndexWriter(self)
 
-    def reader(self) -> SqlIndexReader:
-        if not self._legacy_write_requested:
-            get_active_generation(self.conn, self.dialect, self.index_name)
-        return SqlIndexReader(self)
+    def reader(self):
+        if self._legacy_write_requested:
+            return SqlIndexReader(self)
+        if self._v2_generation is None:
+            active = get_active_generation(self.conn, self.dialect, self.index_name)
+            if active is None:
+                raise ValueError(f"No active SQL index named {self.index_name!r}")
+            self._v2_generation = active.generation
+        return V2SqlIndexReader(self, self._v2_generation)
 
     def close(self) -> None:
         if self.owns_connection:
