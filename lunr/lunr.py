@@ -48,8 +48,9 @@ def lunr(
     Returns:
         Index: The populated Index ready to search against.
     """
+    normalized_languages = lang.normalize_languages(languages)
     custom_builder = builder is not None
-    builder = builder or get_default_builder(languages)
+    builder = builder or get_default_builder(normalized_languages or None)
     storage = storage or builder._storage_backend
     if storage is not None and parallel_backend not in {"process", "thread"}:
         raise ValueError("backend must be either 'process' or 'thread'")
@@ -79,9 +80,9 @@ def lunr(
             for name, field in builder._fields.items()
         ]
         pipeline_config = (
-            {"pipeline": builder.pipeline}
+            {"pipeline": builder.pipeline, "languages": normalized_languages}
             if custom_builder
-            else {"languages": languages}
+            else {"languages": normalized_languages}
         )
         effective_workers = (
             workers if workers is not None else builder._parallel_workers
@@ -116,10 +117,8 @@ def get_default_builder(languages=None):
 
     Useful as a starting point to tweak the defaults.
     """
-    if languages is not None:
-        if isinstance(languages, str):
-            languages = [languages]
-
+    languages = lang.normalize_languages(languages)
+    if languages:
         requested_languages = set(languages)
         nltk_independent_languages = {"ru"}
 

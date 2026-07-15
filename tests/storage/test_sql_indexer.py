@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from lunr import get_default_builder, lunr
+from lunr.exceptions import BaseLunrException
 from lunr.storage.sql import SqlStorage
 from lunr.storage.sql.indexer import SqlIndexer, _bounded_map
 from lunr.storage.sql.schema import get_active_generation
@@ -52,6 +53,33 @@ def test_failed_rebuild_keeps_previous_results(sqlite_storage):
 
     reopened = sqlite_storage.open_index()
     assert [hit["ref"] for hit in reopened.search("first")] == ["1"]
+
+
+def test_fresh_storage_facade_reopens_default_pipeline(sqlite_storage):
+    lunr(
+        "id",
+        ("title",),
+        [{"id": "1", "title": "plants"}],
+        storage=sqlite_storage,
+    )
+    fresh = SqlStorage.from_conn(sqlite_storage.conn, "docs")
+
+    assert [hit["ref"] for hit in fresh.open_index().search("plant")] == ["1"]
+
+
+def test_fresh_storage_facade_rejects_custom_pipeline(sqlite_storage):
+    builder = get_default_builder()
+    lunr(
+        "id",
+        ("title",),
+        [{"id": "1", "title": "plants"}],
+        builder=builder,
+        storage=sqlite_storage,
+    )
+    fresh = SqlStorage.from_conn(sqlite_storage.conn, "docs")
+
+    with pytest.raises(BaseLunrException, match="custom.*pipeline"):
+        fresh.open_index()
 
 
 @pytest.mark.parametrize("backend", [None, "thread", "process"])

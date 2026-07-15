@@ -8,9 +8,8 @@ from typing import Any, Dict, Iterable, Iterator
 from lunr import get_default_builder
 from lunr.index import Index
 from lunr.storage.sql.indexer import SqlIndexer
-from lunr.storage.sql.reader import SqlIndexReader
 from lunr.storage.sql.schema import ensure_schema, get_active_generation
-from lunr.storage.sql import SqlFieldVectorsProxy, SqlInvertedIndexProxy, SqlStorage
+from lunr.storage.sql import SqlStorage
 from lunr.token_set import TokenSet
 
 
@@ -59,17 +58,7 @@ def sql_lunr_index(
             )
             return
 
-        reader = SqlIndexReader(storage, active.generation)
-
-        idx = Index(
-            inverted_index=SqlInvertedIndexProxy(reader),
-            field_vectors=SqlFieldVectorsProxy(reader),
-            token_set=None,
-            fields=active.fields,
-            pipeline=get_default_builder(active.languages or None).search_pipeline,
-            storage_reader=reader,
-        )
-        yield idx
+        yield storage.open_index(languages=languages, generation=active)
     finally:
         conn.close()
 

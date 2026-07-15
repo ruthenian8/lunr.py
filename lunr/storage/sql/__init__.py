@@ -49,20 +49,44 @@ class SqlStorage:
             raise ValueError(f"No active SQL index named {self.index_name!r}")
         return V2SqlIndexReader(self, active.generation)
 
-    def open_index(self):
-        if not hasattr(self, "_index_fields") or not hasattr(
-            self, "_search_pipeline"
-        ):
-            raise ValueError("Index configuration is not available on this storage")
+    def open_index(self, languages=None, generation=None):
+        from lunr import get_default_builder
+        from lunr.exceptions import BaseLunrException
         from lunr.index import Index
+        from lunr.languages import normalize_languages
 
-        reader = self.reader()
+        active = generation or get_active_generation(
+            self.conn, self.dialect, self.index_name
+        )
+        if active is None:
+            raise ValueError(f"No active SQL index named {self.index_name!r}")
+
+        stored_languages = normalize_languages(active.languages)
+        if languages is not None:
+            requested_languages = normalize_languages(languages)
+            if requested_languages != stored_languages:
+                raise BaseLunrException(
+                    "Requested languages do not match the stored index languages"
+                )
+
+        if active.build_metadata.get("pipeline") == "custom":
+            if not hasattr(self, "_search_pipeline"):
+                raise BaseLunrException(
+                    "A custom pipeline cannot be reconstructed from SQL metadata"
+                )
+            search_pipeline = self._search_pipeline
+        else:
+            search_pipeline = get_default_builder(
+                stored_languages or None
+            ).search_pipeline
+
+        reader = V2SqlIndexReader(self, active.generation)
         return Index(
             inverted_index=SqlInvertedIndexProxy(reader),
             field_vectors=SqlFieldVectorsProxy(reader),
             token_set=None,
-            fields=self._index_fields,
-            pipeline=self._search_pipeline,
+            fields=active.fields,
+            pipeline=search_pipeline,
             storage_reader=reader,
         )
 

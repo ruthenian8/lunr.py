@@ -29,6 +29,7 @@ class Generation:
     state: str
     fields: List[str]
     languages: List[str]
+    build_metadata: dict
     error: Optional[str]
 
 
@@ -171,7 +172,9 @@ def begin_generation(conn, dialect, index_name, fields, languages) -> str:
         cursor.close()
 
 
-def activate_generation(conn, dialect, index_name, generation) -> None:
+def activate_generation(
+    conn, dialect, index_name, generation, build_metadata=None
+) -> None:
     """Atomically make a completed generation visible to new readers."""
     placeholder = dialect.placeholder
     cursor = conn.cursor()
@@ -192,9 +195,15 @@ def activate_generation(conn, dialect, index_name, generation) -> None:
         )
         cursor.execute(
             "UPDATE lunr_v2_indexes SET "
-            f"schema_version={placeholder}, active_generation={placeholder} "
+            f"schema_version={placeholder}, active_generation={placeholder}, "
+            f"build_metadata={placeholder} "
             f"WHERE index_name={placeholder}",
-            (SCHEMA_VERSION, generation, index_name),
+            (
+                SCHEMA_VERSION,
+                generation,
+                json_dump(build_metadata or {}),
+                index_name,
+            ),
         )
         cursor.execute(
             "UPDATE lunr_v2_generations SET state='active' "
@@ -242,7 +251,7 @@ def get_active_generation(conn, dialect, index_name) -> Optional[Generation]:
     try:
         cursor.execute(
             "SELECT g.index_name, g.generation, g.state, g.fields, "
-            "g.languages, g.error FROM lunr_v2_indexes i "
+            "g.languages, i.build_metadata, g.error FROM lunr_v2_indexes i "
             "JOIN lunr_v2_generations g ON "
             "g.index_name=i.index_name AND g.generation=i.active_generation "
             f"WHERE i.index_name={placeholder} AND i.schema_version={placeholder}",
@@ -259,7 +268,8 @@ def get_active_generation(conn, dialect, index_name) -> Optional[Generation]:
         state=row[2],
         fields=list(json_load(row[3])),
         languages=list(json_load(row[4])),
-        error=row[5],
+        build_metadata=dict(json_load(row[5]) or {}),
+        error=row[6],
     )
 
 

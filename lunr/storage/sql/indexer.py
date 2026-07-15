@@ -7,6 +7,7 @@ from collections import Counter, defaultdict, deque, namedtuple
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 from lunr.field_ref import FieldRef
+from lunr.languages import normalize_languages
 from lunr.tokenizer import Tokenizer
 from lunr.vector import Vector
 
@@ -54,7 +55,9 @@ def _process_document(payload):
     if pipeline is None:
         from lunr.lunr import get_default_builder
 
-        pipeline = get_default_builder(pipeline_config.get("languages")).pipeline
+        pipeline = get_default_builder(
+            pipeline_config.get("languages") or None
+        ).pipeline
     records = []
     for field_name, field_boost, extractor in fields:
         value = document[field_name] if extractor is None else extractor(document)
@@ -105,8 +108,8 @@ class SqlIndexer:
     ):
         batch_sizes = batch_sizes or {}
         row_batch_size = max(1, int(batch_sizes.get("rows", 5000)))
-        raw_languages = pipeline_config.get("languages") or []
-        languages = [raw_languages] if isinstance(raw_languages, str) else list(raw_languages)
+        languages = normalize_languages(pipeline_config.get("languages"))
+        pipeline_config = dict(pipeline_config, languages=languages)
         if backend not in {"process", "thread"}:
             raise ValueError("backend must be either 'process' or 'thread'")
         field_names = [field[0] for field in fields]
@@ -136,7 +139,19 @@ class SqlIndexer:
             )
             self.conn.commit()
             writer = None
-            activate_generation(self.conn, self.dialect, self.index_name, generation)
+            activate_generation(
+                self.conn,
+                self.dialect,
+                self.index_name,
+                generation,
+                build_metadata={
+                    "pipeline": (
+                        "custom"
+                        if pipeline_config.get("pipeline") is not None
+                        else "default"
+                    )
+                },
+            )
         except Exception as error:
             writer = None
             self.conn.rollback()
