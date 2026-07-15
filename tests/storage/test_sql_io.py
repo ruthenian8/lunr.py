@@ -204,21 +204,6 @@ def test_building_generation_does_not_override_active_reader(populated_storage):
     assert populated_storage.reader().expand_terms(["green", "invisible"]) == ["green"]
 
 
-def test_v2_writer_selection_clears_temporary_legacy_mode():
-    connection = sqlite3.connect(":memory:")
-    storage = SqlStorage.from_conn(connection, "docs")
-    storage.writer()
-    ensure_schema(connection, storage.dialect)
-    generation = begin_generation(connection, storage.dialect, "docs", ["body"], [])
-    storage.writer(generation).finalize_terms([("native", 0)])
-    connection.commit()
-    activate_generation(connection, storage.dialect, "docs", generation)
-    try:
-        assert storage.reader().expand_terms(["native"]) == ["native"]
-    finally:
-        connection.close()
-
-
 def test_posting_and_vector_reads_chunk_parameters(populated_storage):
     reader = populated_storage.reader()
     statements = []
@@ -262,6 +247,17 @@ class _SingleCursorConnection:
 
     def cursor(self):
         return self.value
+
+
+class _FailingExecutemanyCursor:
+    def __init__(self):
+        self.closed = False
+
+    def executemany(self, sql, rows):
+        raise RuntimeError("write failed")
+
+    def close(self):
+        self.closed = True
 
 
 def test_reader_accepts_native_json_values():
@@ -310,5 +306,19 @@ def test_writer_closes_validation_cursor_when_execute_fails():
 
     with pytest.raises(RuntimeError, match="query failed"):
         V2SqlIndexWriter(storage, "generation")
+
+    assert cursor.closed
+
+
+def test_writer_closes_cursor_when_executemany_fails():
+    cursor = _FailingExecutemanyCursor()
+    writer = object.__new__(V2SqlIndexWriter)
+    writer.conn = _SingleCursorConnection(cursor)
+    writer.index_name = "docs"
+    writer.generation = "generation"
+    writer.dialect = get_dialect("sqlite")
+
+    with pytest.raises(RuntimeError, match="write failed"):
+        writer.finalize_terms([("green", 0)])
 
     assert cursor.closed

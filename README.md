@@ -100,9 +100,12 @@ for more usage examples.
 
 ## SQL storage backend (optional)
 
-`lunr.py` now includes an optional SQL-backed storage mode through `SqlStorage`.
-This keeps the public indexing/search API the same while persisting terms,
-postings, and vectors in SQL.
+Install all SQL and Flask integrations with `pip install "lunr[sql]"`, or select
+`lunr[postgresql]`, `lunr[mysql]`, or `lunr[flask]`. SQLite uses Python's
+built-in driver and needs no backend-specific extra.
+
+`SqlStorage` persists terms, postings, and vectors in the generation-based
+`lunr_v2_*` schema while keeping the public indexing and search API unchanged.
 
 ```python
 from lunr import lunr
@@ -112,6 +115,22 @@ storage = SqlStorage.from_url("sqlite:///:memory:", index_name="docs")
 idx = lunr(ref="id", fields=("title", "body"), documents=documents, storage=storage)
 ```
 
+Use `sqlite:///relative.db` for a path relative to the current directory and
+`sqlite:////absolute/path/index.db` for an absolute POSIX path. PostgreSQL and
+MySQL use normal driver URLs such as `postgresql://user:pass@host/db` and
+`mysql://user:pass@host/db`.
+
+V1 databases containing `lunr_terms`, `lunr_postings`, or the other unversioned
+tables are not migrated. Opening one raises `SqlRebuildRequiredError`; rebuild
+the source documents to create the V2 schema.
+
+Rebuilds stage an invisible generation and atomically activate it only after a
+successful build. A failed build leaves the previous generation searchable.
+Older generations are retained for readers already pinned to them. After every
+such reader is closed, reclaim them explicitly with
+`storage.prune_inactive_generations()`. Never prune while a pinned reader may
+still be in use.
+
 SQL mode supports exact term search and wildcard (`*`) expansion via SQL `LIKE`.
 The following features are intentionally not supported in SQL mode and will raise
 an exception:
@@ -119,9 +138,13 @@ an exception:
 - prohibited clauses (e.g. `-term`)
 - fully negated queries
 - fuzzy / edit-distance expansion
+- serialization with `Index.serialize()`
 
-For SQL-backed indexes, `Index.serialize()` is disabled. Use the database as the
-persistent representation.
+Exact queries use a bounded number of SQL reads and wildcard queries add an
+expansion read. Leading wildcards such as `*term` can require an expensive scan.
+SQL streaming avoids buffering raw documents and the complete posting tree, but
+the term vocabulary, final vector state, and staged database rows still scale
+with corpus size.
 
 ### Multiprocess indexing and search with SQL storage
 
@@ -171,6 +194,12 @@ if __name__ == "__main__":
     # Example: {'kill': ['a'], 'green study': ['a', 'b']}
 ```
 
-If payloads are not picklable for process-based indexing, Lunr emits a
-`RuntimeWarning` and falls back to the thread backend.
+Default and Russian language pipelines can be reconstructed in worker processes
+and from stored language metadata. If process payloads are not picklable, Lunr
+emits a `RuntimeWarning` and falls back to threads. Arbitrary custom pipelines
+cannot be reconstructed by a fresh `SqlStorage` facade; retain the building
+facade or provide application-level pipeline setup.
 
+The optional Flask example exposes a `/reindex` route for demonstration. A
+production application must protect any reindex endpoint with authentication
+and authorization; do not expose it publicly.

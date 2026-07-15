@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 from .dialects import DIALECTS, SqlDialect, connect_url, get_dialect
-from .legacy import (
-    SqlFieldVectorsProxy,
-    SqlIndexReader,
-    SqlIndexWriter,
-    SqlInvertedIndexProxy,
+from .proxies import SqlFieldVectorsProxy, SqlInvertedIndexProxy
+from .reader import SqlIndexReader
+from .schema import (
+    SqlRebuildRequiredError,
+    get_active_generation,
+    prune_inactive_generations,
 )
-from .reader import SqlIndexReader as V2SqlIndexReader
-from .schema import SqlRebuildRequiredError, get_active_generation
-from .writer import SqlIndexWriter as V2SqlIndexWriter
+from .writer import SqlIndexWriter
 
 
 class SqlStorage:
@@ -20,7 +19,6 @@ class SqlStorage:
         self.index_name = index_name
         self.dialect = get_dialect(dialect) if isinstance(dialect, str) else dialect
         self.owns_connection = owns_connection
-        self._legacy_write_requested = False
 
     @classmethod
     def from_url(cls, url: str, index_name: str) -> "SqlStorage":
@@ -28,26 +26,19 @@ class SqlStorage:
         return cls(conn, index_name, dialect, owns_connection=True)
 
     @classmethod
-    def from_conn(
-        cls, conn, index_name: str, dialect: str = "sqlite"
-    ) -> "SqlStorage":
+    def from_conn(cls, conn, index_name: str, dialect: str = "sqlite") -> "SqlStorage":
         return cls(conn, index_name, dialect, owns_connection=False)
 
     def writer(self, generation=None):
-        if generation is not None:
-            writer = V2SqlIndexWriter(self, generation)
-            self._legacy_write_requested = False
-            return writer
-        self._legacy_write_requested = True
-        return SqlIndexWriter(self)
+        if generation is None:
+            raise TypeError("generation is required for a V2 SQL writer")
+        return SqlIndexWriter(self, generation)
 
     def reader(self):
-        if self._legacy_write_requested:
-            return SqlIndexReader(self)
         active = get_active_generation(self.conn, self.dialect, self.index_name)
         if active is None:
             raise ValueError(f"No active SQL index named {self.index_name!r}")
-        return V2SqlIndexReader(self, active.generation)
+        return SqlIndexReader(self, active.generation)
 
     def open_index(self, languages=None, generation=None):
         from lunr import get_default_builder
@@ -70,7 +61,7 @@ class SqlStorage:
                 )
 
         if active.build_metadata.get("pipeline") == "custom":
-            if not hasattr(self, "_search_pipeline"):
+            if getattr(self, "_search_pipeline", None) is None:
                 raise BaseLunrException(
                     "A custom pipeline cannot be reconstructed from SQL metadata"
                 )
@@ -80,7 +71,7 @@ class SqlStorage:
                 stored_languages or None
             ).search_pipeline
 
-        reader = V2SqlIndexReader(self, active.generation)
+        reader = SqlIndexReader(self, active.generation)
         return Index(
             inverted_index=SqlInvertedIndexProxy(reader),
             field_vectors=SqlFieldVectorsProxy(reader),
@@ -89,6 +80,14 @@ class SqlStorage:
             pipeline=search_pipeline,
             storage_reader=reader,
         )
+
+    def prune_inactive_generations(self):
+        """Delete retained generations after all pinned readers are closed.
+
+        This operation is never automatic because an older ``Index`` may still
+        query its pinned generation. Building generations are not removed.
+        """
+        return prune_inactive_generations(self.conn, self.dialect, self.index_name)
 
     def close(self) -> None:
         if self.owns_connection:

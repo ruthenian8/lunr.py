@@ -2,8 +2,15 @@ import sqlite3
 
 import pytest
 
-from lunr.storage.sql import SqlRebuildRequiredError, SqlStorage
-from lunr.vector import Vector
+from lunr import lunr
+from lunr.storage.sql import (
+    SqlIndexReader,
+    SqlIndexWriter,
+    SqlRebuildRequiredError,
+    SqlStorage,
+)
+from lunr.storage.sql.reader import SqlIndexReader as V2SqlIndexReader
+from lunr.storage.sql.writer import SqlIndexWriter as V2SqlIndexWriter
 
 
 @pytest.fixture
@@ -36,6 +43,17 @@ def test_storage_context_closes_only_owned_connection(tmp_path, monkeypatch):
         external.close()
 
 
+def test_storage_close_closes_an_owned_connection_directly(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    storage = SqlStorage.from_url("sqlite:///owned.db", "docs")
+    connection = storage.conn
+
+    storage.close()
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        connection.execute("SELECT 1")
+
+
 def test_v1_only_database_requires_rebuild(v1_connection):
     storage = SqlStorage.from_conn(v1_connection, "docs")
 
@@ -43,20 +61,38 @@ def test_v1_only_database_requires_rebuild(v1_connection):
         storage.reader()
 
 
-def test_temporary_legacy_writer_reader_lifecycle_is_scoped_to_one_facade():
+def test_public_reader_writer_imports_alias_v2_implementations():
+    assert SqlIndexReader is V2SqlIndexReader
+    assert SqlIndexWriter is V2SqlIndexWriter
+
+
+def test_writer_requires_an_explicit_v2_generation():
+    storage = SqlStorage.from_conn(sqlite3.connect(":memory:"), "docs")
+    try:
+        with pytest.raises(TypeError, match="generation"):
+            storage.writer()
+    finally:
+        storage.conn.close()
+
+
+def test_prune_inactive_generations_is_explicit_and_index_scoped():
     connection = sqlite3.connect(":memory:")
     storage = SqlStorage.from_conn(connection, "docs")
     try:
-        writer = storage.writer()
-        writer.upsert_term("green", 0)
-        writer.upsert_posting("green", "title", "1", {})
-        writer.upsert_field_vector("title/1", "title", "1", Vector([0, 1]))
-        writer.commit()
+        old = lunr(
+            "id", ("body",), [{"id": "old", "body": "retained"}], storage=storage
+        )
+        old_generation = old.storage_reader.generation
+        lunr("id", ("body",), [{"id": "new", "body": "active"}], storage=storage)
+        other = SqlStorage.from_conn(connection, "other")
+        lunr("id", ("body",), [{"id": "other", "body": "safe"}], storage=other)
 
-        assert storage.reader().get_posting("green")["title"] == {"1": {}}
-
-        reopened = SqlStorage.from_conn(connection, "docs")
-        with pytest.raises(SqlRebuildRequiredError, match="rebuild"):
-            reopened.reader()
+        assert storage.prune_inactive_generations() == [old_generation]
+        assert connection.execute(
+            "SELECT COUNT(*) FROM lunr_v2_generations "
+            "WHERE index_name=? AND generation=?",
+            ("docs", old_generation),
+        ).fetchone() == (0,)
+        assert other.open_index().search("safe")[0]["ref"] == "other"
     finally:
         connection.close()

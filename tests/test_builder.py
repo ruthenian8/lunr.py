@@ -14,6 +14,19 @@ def _assert_deep_keys(dict_, keys):
         d = d[key]
 
 
+def test_deprecated_sql_batch_controls_are_not_silent_noops():
+    builder = Builder()
+
+    with pytest.warns(DeprecationWarning, match="doc_batch_size"):
+        builder.sql_flush(doc_batch_size=10, row_batch_size=20)
+    with pytest.warns(DeprecationWarning, match="sql_commit_every"):
+        builder.sql_commit_every(docs=10, rows=20)
+
+    assert builder._sql_row_batch_size == 20
+    assert not hasattr(builder, "_sql_doc_batch_size")
+    assert not hasattr(builder, "_sql_commit_every_docs")
+
+
 class TestBuilderBuild:
     def setup_method(self, method):
         self.builder = Builder()

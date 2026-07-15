@@ -302,6 +302,29 @@ def cleanup_generation(conn, dialect, index_name, generation) -> None:
         cursor.close()
 
 
+def prune_inactive_generations(conn, dialect, index_name):
+    """Delete retained ready generations for one logical index.
+
+    Callers must ensure no readers remain pinned to an inactive generation.
+    Building generations are deliberately left untouched.
+    """
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT generation FROM lunr_v2_generations "
+            f"WHERE index_name={dialect.placeholder} AND state='ready' "
+            "ORDER BY generation",
+            (index_name,),
+        )
+        generations = [row[0] for row in cursor.fetchall()]
+    finally:
+        cursor.close()
+
+    for generation in generations:
+        cleanup_generation(conn, dialect, index_name, generation)
+    return generations
+
+
 def _lock_logical_index(cursor, dialect, index_name):
     """Create and lock one logical-index row for a lifecycle transaction."""
     if dialect.begin_write_sql is not None:

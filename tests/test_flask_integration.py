@@ -1,4 +1,5 @@
 import json
+import inspect
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -64,6 +65,13 @@ def test_dialect_name_falls_back_to_str_value():
     assert _dialect_name_from_engine(engine) == "sqlite"
 
 
+def test_build_helper_does_not_advertise_ignored_batch_arguments():
+    parameters = inspect.signature(build_or_rebuild_index).parameters
+
+    assert "doc_batch_size" not in parameters
+    assert "commit_docs" not in parameters
+
+
 def test_build_or_rebuild_and_query_roundtrip(documents, tmp_path):
     db = _DB(tmp_path / "site.db")
 
@@ -103,14 +111,10 @@ def test_rebuild_replaces_existing_documents(documents, tmp_path):
 
 def test_rebuild_failure_preserves_searchable_index(tmp_path):
     db = _DB(tmp_path / "site.db")
-    build_or_rebuild_index(
-        db, "site", [{"id": "1", "title": "first", "body": "safe"}]
-    )
+    build_or_rebuild_index(db, "site", [{"id": "1", "title": "first", "body": "safe"}])
 
     with pytest.raises(KeyError):
-        build_or_rebuild_index(
-            db, "site", [{"id": "2", "title": "missing body"}]
-        )
+        build_or_rebuild_index(db, "site", [{"id": "2", "title": "missing body"}])
 
     with sql_lunr_index(db, "site") as idx:
         assert _refs(idx, "first") == ["1"]
@@ -166,6 +170,39 @@ def test_sqlite_streaming_source_can_cross_index_flush_boundary(tmp_path):
 
     with sql_lunr_index(db, "site") as idx:
         assert len(idx.search("streamed")) == 12
+
+
+def test_build_refuses_sqlite_without_wal_mode():
+    class Cursor:
+        def execute(self, statement):
+            assert statement == "PRAGMA journal_mode=WAL"
+
+        def fetchone(self):
+            return ("delete",)
+
+        def close(self):
+            pass
+
+    class Connection:
+        closed = False
+
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+    engine = SimpleNamespace(
+        dialect=SimpleNamespace(name="sqlite"),
+        raw_connection=lambda: connection,
+    )
+    db = SimpleNamespace(engine=engine)
+
+    with pytest.raises(RuntimeError, match="SQLite.*WAL"):
+        build_or_rebuild_index(db, "site", [])
+
+    assert connection.closed
 
 
 def test_rebuilding_one_index_does_not_delete_another(tmp_path):

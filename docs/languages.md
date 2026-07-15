@@ -109,6 +109,15 @@ idx.search("ёлка")     # matches ёлкой with diacritics preserved
 
 Morphological parsing is context-free, so ambiguous forms are normalized using the top-ranked parse.
 
+### Languages with SQL storage
+
+SQL generations persist their ordered language list. A fresh
+`SqlStorage.open_index()` reconstructs the default or Russian search pipeline
+from that metadata; passing an explicit conflicting language list raises an
+error. Default and Russian pipelines are also reconstructable in process
+workers. Arbitrary custom pipeline functions must be picklable for process
+indexing and cannot be reconstructed by a fresh facade from metadata alone.
+
 ## Folding to ASCII
 
 It is often useful to allow for transliterated or unaccented

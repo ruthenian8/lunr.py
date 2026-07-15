@@ -21,15 +21,6 @@ class SqlDialect:
     begin_write_sql: Optional[str]
     row_lock_suffix: str
 
-    @property
-    def upsert(self) -> str:
-        """Return the mode expected by the temporary legacy SQL writer."""
-        return {
-            "sqlite": "replace",
-            "postgresql": "conflict",
-            "mysql": "duplicate",
-        }[self.name]
-
     def placeholders(self, count: int) -> str:
         return ", ".join([self.placeholder] * count)
 

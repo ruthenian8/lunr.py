@@ -1,5 +1,6 @@
 from collections import defaultdict
 import math
+import warnings
 
 
 from lunr.pipeline import Pipeline
@@ -9,6 +10,7 @@ from lunr.field_ref import FieldRef
 from lunr.index import Index
 from lunr.vector import Vector
 from lunr.idf import idf as Idf
+
 
 class Field:
     """Represents a field with boost and extractor functions."""
@@ -54,11 +56,7 @@ class Builder:
         self._storage_backend = None
         self._parallel_workers = 1
         self._parallel_backend = "process"
-        self._sql_flush_enabled = False
-        self._sql_doc_batch_size = 500
         self._sql_row_batch_size = 5000
-        self._sql_commit_every_docs = None
-        self._sql_commit_every_rows = None
         self._df_threshold = None
 
     def ref(self, ref):
@@ -221,22 +219,29 @@ class Builder:
         self._storage_backend = storage_backend
         return self
 
-    def sql_flush(self, enabled=True, doc_batch_size=500, row_batch_size=5000):
-        """Configure bounded-memory SQL flushing.
+    def sql_flush(self, enabled=True, doc_batch_size=None, row_batch_size=5000):
+        """Configure the SQL row batch size.
 
-        When enabled with a SQL backend, postings and term frequencies are
-        streamed to SQL in chunks instead of keeping the entire posting tree in
-        memory.
+        SQL builds always stream. ``enabled`` and ``doc_batch_size`` are
+        deprecated because V2 does not use them.
         """
-        self._sql_flush_enabled = bool(enabled)
-        self._sql_doc_batch_size = max(1, int(doc_batch_size))
+        if enabled is not True or doc_batch_size is not None:
+            warnings.warn(
+                "sql_flush enabled/doc_batch_size are deprecated and ignored; "
+                "only row_batch_size configures V2 SQL builds",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self._sql_row_batch_size = max(1, int(row_batch_size))
         return self
 
     def sql_commit_every(self, docs=None, rows=None):
-        """Configure optional commit cadence for SQL writes."""
-        self._sql_commit_every_docs = None if docs is None else max(1, int(docs))
-        self._sql_commit_every_rows = None if rows is None else max(1, int(rows))
+        """Deprecated no-op retained for source compatibility."""
+        warnings.warn(
+            "sql_commit_every is deprecated and ignored by atomic V2 SQL builds",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self
 
     def df_threshold(self, threshold):

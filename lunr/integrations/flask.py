@@ -41,6 +41,7 @@ def sql_lunr_index(
         languages: Optional language(s) passed to
             :func:`~lunr.get_default_builder` so that the search pipeline
             uses the correct language-specific stemmer / stop-word filter.
+            If provided, it must exactly match the stored ordered language list.
     """
     conn = db.engine.raw_connection()
     try:
@@ -68,9 +69,7 @@ def build_or_rebuild_index(
     index_name: str,
     documents: Iterable[Dict[str, Any]],
     *,
-    doc_batch_size: int = 500,
     row_batch_size: int = 5000,
-    commit_docs: int = 2000,
     ref_field: str = "id",
     text_fields: Iterable[str] | None = None,
     metadata_whitelist: Iterable[str] | None = None,
@@ -85,9 +84,7 @@ def build_or_rebuild_index(
             attribute exposes ``raw_connection()``).
         index_name: Logical name of the index inside the database.
         documents: Iterable of document dicts to index.
-        doc_batch_size: Documents per batch when flushing to SQL.
         row_batch_size: Rows per batch when flushing to SQL.
-        commit_docs: Commit interval (number of documents).
         ref_field: Document key used as the reference field.
         text_fields: Fields to index; defaults to ``["title", "body"]``.
         metadata_whitelist: Additional metadata keys to store.
@@ -95,7 +92,8 @@ def build_or_rebuild_index(
         parallel_backend: ``"thread"`` or ``"process"``.
         languages: Optional language(s) passed to
             :func:`~lunr.get_default_builder` so that the builder uses
-            language-specific stemming / stop-word pipelines.
+            language-specific stemming / stop-word pipelines. Reopening this
+            index with an explicit language list requires an exact match.
     """
     fields = list(text_fields) if text_fields is not None else ["title", "body"]
 
@@ -107,9 +105,15 @@ def build_or_rebuild_index(
             cursor = conn.cursor()
             try:
                 cursor.execute("PRAGMA journal_mode=WAL")
-                cursor.fetchone()
+                row = cursor.fetchone()
             finally:
                 cursor.close()
+            journal_mode = "" if row is None else str(row[0]).lower()
+            if journal_mode != "wal":
+                raise RuntimeError(
+                    "SQLite WAL mode is required for streaming rebuilds; "
+                    f"database reported {journal_mode or 'no journal mode'}"
+                )
         builder = get_default_builder(languages)
         SqlIndexer(storage).build(
             documents,
@@ -148,7 +152,8 @@ def create_app(
         languages: Optional language(s) forwarded to
             :func:`build_or_rebuild_index` and :func:`sql_lunr_index` so
             that the index pipelines use the correct language-specific
-            stemmer / stop-word filter.
+            stemmer / stop-word filter. Changing it for an existing index
+            causes an explicit language-conflict error on search.
     """
     from flask import Flask, jsonify, request  # type: ignore
     from flask_sqlalchemy import SQLAlchemy  # type: ignore
@@ -158,7 +163,7 @@ def create_app(
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     db = SQLAlchemy(app)
 
-    index_name = "site_search_v1"
+    index_name = "site_search"
 
     class Document(db.Model):  # type: ignore[name-defined]
         """Simple database model used for reindexing."""
@@ -194,7 +199,6 @@ def create_app(
             db,
             index_name,
             documents(),
-            doc_batch_size=doc_batch_size,
             ref_field="id",
             text_fields=["title", "body"],
             languages=languages,

@@ -40,9 +40,10 @@ def test_sql_build_consumes_generator_once_without_raw_document_buffer(sqlite_st
 
     assert consumed == list(range(50))
     assert [hit["ref"] for hit in index.search("machine")]
-    assert get_active_generation(
-        sqlite_storage.conn, sqlite_storage.dialect, "docs"
-    ) is not None
+    assert (
+        get_active_generation(sqlite_storage.conn, sqlite_storage.dialect, "docs")
+        is not None
+    )
 
 
 def test_failed_rebuild_keeps_previous_results(sqlite_storage):
@@ -82,6 +83,21 @@ def test_fresh_storage_facade_rejects_custom_pipeline(sqlite_storage):
         fresh.open_index()
 
 
+def test_open_index_rejects_cached_none_for_custom_pipeline(sqlite_storage):
+    builder = get_default_builder()
+    lunr(
+        "id",
+        ("body",),
+        [{"id": "1", "body": "hello"}],
+        builder=builder,
+        storage=sqlite_storage,
+    )
+    sqlite_storage._search_pipeline = None
+
+    with pytest.raises(BaseLunrException, match="custom.*pipeline"):
+        sqlite_storage.open_index()
+
+
 @pytest.mark.parametrize("backend", [None, "thread", "process"])
 def test_sql_scoring_matches_memory(documents, backend):
     connection = sqlite3.connect(":memory:")
@@ -101,11 +117,9 @@ def test_sql_scoring_matches_memory(documents, backend):
             warning for warning in caught if "falling back" in str(warning.message)
         ]
         assert [
-            (result["ref"], result["score"])
-            for result in sql.search("green study")
+            (result["ref"], result["score"]) for result in sql.search("green study")
         ] == [
-            (result["ref"], result["score"])
-            for result in memory.search("green study")
+            (result["ref"], result["score"]) for result in memory.search("green study")
         ]
     finally:
         connection.close()
@@ -170,9 +184,7 @@ def test_custom_builder_preconfigured_storage_and_threshold_are_preserved(
 
 def test_russian_process_workers_reconstruct_default_pipeline(sqlite_storage):
     pytest.importorskip("pymorphy3")
-    documents = (
-        {"id": str(index), "body": "общая машина"} for index in range(4)
-    )
+    documents = ({"id": str(index), "body": "общая машина"} for index in range(4))
 
     with warnings.catch_warnings(record=True) as caught:
         index = lunr(
@@ -312,7 +324,7 @@ def test_direct_sql_builder_build_is_explicitly_rejected(sqlite_storage):
         builder.build()
 
 
-def test_bm25_document_frequency_counts_docs_not_field_postings(sqlite_storage):
+def test_bm25_document_frequency_matches_lunr_js_field_postings(sqlite_storage):
     lunr(
         "id",
         ("title", "body"),
@@ -336,4 +348,4 @@ def test_bm25_document_frequency_counts_docs_not_field_postings(sqlite_storage):
         ).fetchone()[0]
     )
 
-    assert elements[elements.index(term_index) + 1] == 0.182
+    assert elements[elements.index(term_index) + 1] == 0.134
