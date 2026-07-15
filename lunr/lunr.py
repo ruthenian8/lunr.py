@@ -51,6 +51,8 @@ def lunr(
     custom_builder = builder is not None
     builder = builder or get_default_builder(languages)
     storage = storage or builder._storage_backend
+    if storage is not None and parallel_backend not in {"process", "thread"}:
+        raise ValueError("backend must be either 'process' or 'thread'")
     if df_threshold is not None:
         builder.df_threshold(df_threshold)
     if workers is not None and storage is None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import pickle
 import warnings
-from collections import Counter, defaultdict, namedtuple
+from collections import Counter, defaultdict, deque, namedtuple
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 from lunr.field_ref import FieldRef
@@ -24,6 +24,24 @@ FieldRecord = namedtuple(
     "FieldRecord",
     "doc_ref field field_ref length term_counts metadata_by_term boost",
 )
+
+
+def _bounded_map(executor, function, iterable, max_in_flight):
+    """Yield ordered results without eagerly submitting the whole iterable."""
+    iterator = iter(iterable)
+    pending = deque()
+    for _ in range(max_in_flight):
+        try:
+            pending.append(executor.submit(function, next(iterator)))
+        except StopIteration:
+            break
+    while pending:
+        future = pending.popleft()
+        yield future.result()
+        try:
+            pending.append(executor.submit(function, next(iterator)))
+        except StopIteration:
+            pass
 
 
 def _process_document(payload):
@@ -88,7 +106,10 @@ class SqlIndexer:
     ):
         batch_sizes = batch_sizes or {}
         row_batch_size = max(1, int(batch_sizes.get("rows", 5000)))
-        languages = list(pipeline_config.get("languages") or [])
+        raw_languages = pipeline_config.get("languages") or []
+        languages = [raw_languages] if isinstance(raw_languages, str) else list(raw_languages)
+        if backend not in {"process", "thread"}:
+            raise ValueError("backend must be either 'process' or 'thread'")
         field_names = [field[0] for field in fields]
         ensure_schema(self.conn, self.dialect)
         previous = get_active_generation(self.conn, self.dialect, self.index_name)
@@ -118,7 +139,6 @@ class SqlIndexer:
             self.conn.commit()
             writer = None
             activate_generation(self.conn, self.dialect, self.index_name, generation)
-            self._clean_after_activation(generation, previous)
         except Exception as error:
             writer = None
             self.conn.rollback()
@@ -127,6 +147,15 @@ class SqlIndexer:
             )
             cleanup_generation(self.conn, self.dialect, self.index_name, generation)
             raise
+
+        try:
+            self._clean_after_activation(generation, previous)
+        except Exception as error:
+            self.conn.rollback()
+            warnings.warn(
+                f"SQL index activated but post-activation cleanup failed: {error}",
+                RuntimeWarning,
+            )
 
         self.storage._index_fields = field_names
         self.storage._search_pipeline = search_pipeline
@@ -167,7 +196,10 @@ class SqlIndexer:
             ProcessPoolExecutor if selected_backend == "process" else ThreadPoolExecutor
         )
         executor = executor_class(max_workers=max(1, min(int(workers), 10)))
-        return _ExecutorRecords(executor, executor.map(_process_document, payloads))
+        records = _bounded_map(
+            executor, _process_document, payloads, max(2, int(workers) * 2)
+        )
+        return _ExecutorRecords(executor, records)
 
     def _stage_documents(
         self,
@@ -253,6 +285,7 @@ class SqlIndexer:
         self._recompute_lengths(writer.generation)
 
         cursor = self.conn.cursor()
+        term_count = 0
         try:
             cursor.execute(
                 "SELECT DISTINCT term FROM lunr_v2_term_frequencies "
@@ -260,22 +293,25 @@ class SqlIndexer:
                 "ORDER BY term",
                 (self.index_name, writer.generation),
             )
-            terms = [row[0] for row in cursor.fetchall()]
+            while True:
+                terms = cursor.fetchmany(row_batch_size)
+                if not terms:
+                    break
+                writer.finalize_terms(
+                    [
+                        (term, term_count + index)
+                        for index, (term,) in enumerate(terms)
+                    ]
+                )
+                term_count += len(terms)
         finally:
             cursor.close()
-        for offset in range(0, len(terms), row_batch_size):
-            writer.finalize_terms(
-                [(term, index) for index, term in enumerate(terms)][
-                    offset : offset + row_batch_size
-                ]
-            )
 
         averages = self._average_lengths(writer.generation)
-        occurrences = self._term_occurrences(writer.generation)
         vector_count = self._write_vectors(
-            writer, document_count, averages, occurrences, row_batch_size
+            writer, document_count, averages, row_batch_size
         )
-        return len(terms), vector_count
+        return term_count, vector_count
 
     def _delete_excluded(self, generation, terms):
         for offset in range(0, len(terms), 498):
@@ -296,6 +332,7 @@ class SqlIndexer:
 
     def _recompute_lengths(self, generation):
         cursor = self.conn.cursor()
+        read_cursor = self.conn.cursor()
         try:
             cursor.execute(
                 "UPDATE lunr_v2_doc_fields SET length=0 "
@@ -303,25 +340,29 @@ class SqlIndexer:
                 f"AND generation={self.dialect.placeholder}",
                 (self.index_name, generation),
             )
-            cursor.execute(
+            read_cursor.execute(
                 "SELECT field_ref, SUM(tf) FROM lunr_v2_term_frequencies "
                 f"WHERE index_name={self.dialect.placeholder} "
                 f"AND generation={self.dialect.placeholder} GROUP BY field_ref",
                 (self.index_name, generation),
             )
-            lengths = cursor.fetchall()
-            cursor.executemany(
-                "UPDATE lunr_v2_doc_fields SET length="
-                f"{self.dialect.placeholder} WHERE index_name="
-                f"{self.dialect.placeholder} AND generation="
-                f"{self.dialect.placeholder} AND field_ref="
-                f"{self.dialect.placeholder}",
-                [
-                    (length, self.index_name, generation, field_ref)
-                    for field_ref, length in lengths
-                ],
-            )
+            while True:
+                lengths = read_cursor.fetchmany(500)
+                if not lengths:
+                    break
+                cursor.executemany(
+                    "UPDATE lunr_v2_doc_fields SET length="
+                    f"{self.dialect.placeholder} WHERE index_name="
+                    f"{self.dialect.placeholder} AND generation="
+                    f"{self.dialect.placeholder} AND field_ref="
+                    f"{self.dialect.placeholder}",
+                    [
+                        (length, self.index_name, generation, field_ref)
+                        for field_ref, length in lengths
+                    ],
+                )
         finally:
+            read_cursor.close()
             cursor.close()
 
     def _average_lengths(self, generation):
@@ -333,25 +374,12 @@ class SqlIndexer:
                 f"AND generation={self.dialect.placeholder} GROUP BY field",
                 (self.index_name, generation),
             )
-            return dict(cursor.fetchall())
-        finally:
-            cursor.close()
-
-    def _term_occurrences(self, generation):
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute(
-                "SELECT term, COUNT(*) FROM lunr_v2_postings "
-                f"WHERE index_name={self.dialect.placeholder} "
-                f"AND generation={self.dialect.placeholder} GROUP BY term",
-                (self.index_name, generation),
-            )
-            return dict(cursor.fetchall())
+            return {field: float(length) for field, length in cursor.fetchall()}
         finally:
             cursor.close()
 
     def _write_vectors(
-        self, writer, document_count, averages, occurrences, row_batch_size
+        self, writer, document_count, averages, row_batch_size
     ):
         cursor = self.conn.cursor()
         rows = []
@@ -359,16 +387,26 @@ class SqlIndexer:
         try:
             cursor.execute(
                 "SELECT d.field_ref, d.field, d.doc_ref, d.length, d.boost, "
-                "t.term, t.tf, x.term_index FROM lunr_v2_doc_fields d "
+                "t.term, t.tf, x.term_index, o.occurrences "
+                "FROM lunr_v2_doc_fields d "
                 "LEFT JOIN lunr_v2_term_frequencies t ON "
                 "t.index_name=d.index_name AND t.generation=d.generation "
                 "AND t.field_ref=d.field_ref LEFT JOIN lunr_v2_terms x ON "
                 "x.index_name=t.index_name AND x.generation=t.generation "
-                "AND x.term=t.term "
+                "AND x.term=t.term LEFT JOIN (SELECT term, "
+                "COUNT(DISTINCT doc_ref) occurrences "
+                "FROM lunr_v2_postings WHERE index_name="
+                f"{self.dialect.placeholder} AND generation="
+                f"{self.dialect.placeholder} GROUP BY term) o ON o.term=t.term "
                 f"WHERE d.index_name={self.dialect.placeholder} "
                 f"AND d.generation={self.dialect.placeholder} "
                 "ORDER BY d.field_ref, x.term_index",
-                (self.index_name, writer.generation),
+                (
+                    self.index_name,
+                    writer.generation,
+                    self.index_name,
+                    writer.generation,
+                ),
             )
             current = None
             vector = None
@@ -382,17 +420,20 @@ class SqlIndexer:
                 term,
                 tf,
                 index,
+                count,
             ) in iter(cursor.fetchone, None):
                 if field_ref != current:
                     if current is not None:
                         rows.append((*identity, vector.serialize(), vector.magnitude))
                         vector_count += 1
+                        if len(rows) >= row_batch_size:
+                            writer.write_vectors(rows)
+                            rows.clear()
                     current = field_ref
                     identity = (field_ref, field, doc_ref)
                     vector = Vector()
                 if term is None:
                     continue
-                count = occurrences[term]
                 value = math.log(
                     1 + abs((document_count - count + 0.5) / (count + 0.5))
                 )
@@ -403,9 +444,6 @@ class SqlIndexer:
                     + tf
                 )
                 vector.insert(index, round(score * boost, 3))
-                if len(rows) >= row_batch_size:
-                    writer.write_vectors(rows)
-                    rows.clear()
             if current is not None:
                 rows.append((*identity, vector.serialize(), vector.magnitude))
                 vector_count += 1

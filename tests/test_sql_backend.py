@@ -178,14 +178,14 @@ def test_sql_backend_parallel_matches_single_worker(documents):
     single_idx = _build_sql_index(documents, single_storage)
 
     builder = get_default_builder()
-    builder.ref("id")
-    builder.field("title")
-    builder.field("body")
-    builder.storage(parallel_storage)
     builder.parallel(workers=4, backend="thread")
-    for document in documents:
-        builder.add(document)
-    parallel_idx = builder.build()
+    parallel_idx = lunr(
+        "id",
+        ("title", "body"),
+        iter(documents),
+        builder=builder,
+        storage=parallel_storage,
+    )
 
     query = "green study"
     assert _refs(parallel_idx, query) == _refs(single_idx, query)
@@ -340,15 +340,14 @@ def test_sql_backend_incremental_flush_matches_standard(documents):
     standard_idx = _build_sql_index(documents, _sqlite_storage("standard"))
 
     builder = get_default_builder()
-    builder.ref("id")
-    builder.field("title")
-    builder.field("body")
-    builder.storage(_sqlite_storage("incremental"))
     builder.sql_flush(enabled=True, doc_batch_size=1, row_batch_size=2)
-    for document in documents:
-        builder.add(document)
-
-    incremental_idx = builder.build()
+    incremental_idx = lunr(
+        "id",
+        ("title", "body"),
+        iter(documents),
+        builder=builder,
+        storage=_sqlite_storage("incremental"),
+    )
 
     assert _refs(incremental_idx, "green study") == _refs(standard_idx, "green study")
 
@@ -357,17 +356,16 @@ def test_sql_backend_parallel_incremental_flush_matches_standard(documents):
     standard_idx = _build_sql_index(documents, _sqlite_storage("standard-parallel"))
 
     builder = get_default_builder()
-    builder.ref("id")
-    builder.field("title")
-    builder.field("body")
-    builder.storage(_sqlite_storage("incremental-parallel"))
     builder.parallel(workers=2, backend="thread")
     builder.sql_flush(enabled=True, doc_batch_size=1, row_batch_size=2)
     builder.sql_commit_every(docs=1, rows=2)
-    for document in documents:
-        builder.add(document)
-
-    incremental_idx = builder.build()
+    incremental_idx = lunr(
+        "id",
+        ("title", "body"),
+        iter(documents),
+        builder=builder,
+        storage=_sqlite_storage("incremental-parallel"),
+    )
 
     assert _refs(incremental_idx, "green study") == _refs(standard_idx, "green study")
 
@@ -380,14 +378,10 @@ def test_sql_backend_parallel_incremental_flush_matches_standard(documents):
 def test_df_threshold_standard_sql_build_removes_high_df_terms(documents):
     storage = _sqlite_storage("df-standard")
     builder = get_default_builder()
-    builder.ref("id")
-    builder.field("title")
-    builder.field("body")
-    builder.storage(storage)
     builder.df_threshold(3)
-    for doc in documents:
-        builder.add(doc)
-    idx = builder.build()
+    idx = lunr(
+        "id", ("title", "body"), iter(documents), builder=builder, storage=storage
+    )
 
     # "green" appears in all 3 docs (df=3) -> removed
     assert _refs(idx, "green") == []
@@ -398,15 +392,11 @@ def test_df_threshold_standard_sql_build_removes_high_df_terms(documents):
 def test_df_threshold_incremental_sql_purges_from_database(documents):
     storage = _sqlite_storage("df-incremental")
     builder = get_default_builder()
-    builder.ref("id")
-    builder.field("title")
-    builder.field("body")
-    builder.storage(storage)
     builder.sql_flush(enabled=True, doc_batch_size=1, row_batch_size=2)
     builder.df_threshold(3)
-    for doc in documents:
-        builder.add(doc)
-    idx = builder.build()
+    idx = lunr(
+        "id", ("title", "body"), iter(documents), builder=builder, storage=storage
+    )
 
     assert _refs(idx, "green") == []
     assert _refs(idx, "plant") != []
@@ -415,15 +405,11 @@ def test_df_threshold_incremental_sql_purges_from_database(documents):
 def test_df_threshold_parallel_sql_build_removes_high_df_terms(documents):
     storage = _sqlite_storage("df-parallel")
     builder = get_default_builder()
-    builder.ref("id")
-    builder.field("title")
-    builder.field("body")
-    builder.storage(storage)
     builder.parallel(workers=2, backend="thread")
     builder.df_threshold(3)
-    for doc in documents:
-        builder.add(doc)
-    idx = builder.build()
+    idx = lunr(
+        "id", ("title", "body"), iter(documents), builder=builder, storage=storage
+    )
 
     assert _refs(idx, "green") == []
     assert _refs(idx, "plant") != []
@@ -432,16 +418,12 @@ def test_df_threshold_parallel_sql_build_removes_high_df_terms(documents):
 def test_df_threshold_parallel_incremental_purges_from_database(documents):
     storage = _sqlite_storage("df-par-inc")
     builder = get_default_builder()
-    builder.ref("id")
-    builder.field("title")
-    builder.field("body")
-    builder.storage(storage)
     builder.parallel(workers=2, backend="thread")
     builder.sql_flush(enabled=True, doc_batch_size=1, row_batch_size=2)
     builder.df_threshold(3)
-    for doc in documents:
-        builder.add(doc)
-    idx = builder.build()
+    idx = lunr(
+        "id", ("title", "body"), iter(documents), builder=builder, storage=storage
+    )
 
     assert _refs(idx, "green") == []
     assert _refs(idx, "plant") != []
@@ -453,14 +435,14 @@ def test_df_threshold_no_effect_when_no_terms_exceed(documents):
     baseline = _build_sql_index(documents, storage_no)
 
     builder = get_default_builder()
-    builder.ref("id")
-    builder.field("title")
-    builder.field("body")
-    builder.storage(storage_hi)
     builder.df_threshold(100)
-    for doc in documents:
-        builder.add(doc)
-    idx = builder.build()
+    idx = lunr(
+        "id",
+        ("title", "body"),
+        iter(documents),
+        builder=builder,
+        storage=storage_hi,
+    )
 
     assert _refs(idx, "green study") == _refs(baseline, "green study")
 

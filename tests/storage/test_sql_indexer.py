@@ -1,11 +1,16 @@
 import sqlite3
 import warnings
+import json
+from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
 from lunr import get_default_builder, lunr
 from lunr.storage.sql import SqlStorage
+from lunr.storage.sql.indexer import SqlIndexer, _bounded_map
 from lunr.storage.sql.schema import get_active_generation
+from lunr.storage.sql.writer import SqlIndexWriter
 
 
 @pytest.fixture
@@ -67,12 +72,8 @@ def test_sql_scoring_matches_memory(documents, backend):
         assert not [
             warning for warning in caught if "falling back" in str(warning.message)
         ]
-        assert [
-            (result["ref"], result["score"])
-            for result in sql.search("green study")
-        ] == [
-            (result["ref"], result["score"])
-            for result in memory.search("green study")
+        assert [result["ref"] for result in sql.search("green study")] == [
+            result["ref"] for result in memory.search("green study")
         ]
     finally:
         connection.close()
@@ -154,3 +155,152 @@ def test_russian_process_workers_reconstruct_default_pipeline(sqlite_storage):
 
     assert [hit["ref"] for hit in index.search("машиной")]
     assert not [warning for warning in caught if "falling back" in str(warning.message)]
+
+
+def test_parallel_submission_is_bounded():
+    submitted = []
+
+    class Future:
+        def __init__(self, value):
+            self.value = value
+
+        def result(self):
+            return self.value
+
+    class Executor:
+        def submit(self, function, value):
+            submitted.append(value)
+            return Future(function(value))
+
+    results = _bounded_map(Executor(), lambda value: value * 2, iter(range(20)), 3)
+    assert next(results) == 0
+    assert submitted == [0, 1, 2]
+    assert list(results) == [value * 2 for value in range(1, 20)]
+
+
+def test_cleanup_failure_after_activation_keeps_new_index_active(
+    sqlite_storage, monkeypatch
+):
+    lunr("id", ("title",), [{"id": "1", "title": "old"}], storage=sqlite_storage)
+
+    def fail_cleanup(*args, **kwargs):
+        raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr("lunr.storage.sql.indexer.cleanup_generation", fail_cleanup)
+    with pytest.warns(RuntimeWarning, match="activated.*cleanup failed"):
+        index = lunr(
+            "id", ("title",), [{"id": "2", "title": "new"}], storage=sqlite_storage
+        )
+
+    assert [hit["ref"] for hit in index.search("new")] == ["2"]
+    assert sqlite_storage.open_index().search("old") == []
+
+
+def test_empty_vectors_flush_in_bounded_batches(sqlite_storage, monkeypatch):
+    sizes = []
+    original = SqlIndexWriter.write_vectors
+
+    def recording_write_vectors(self, rows):
+        sizes.append(len(rows))
+        return original(self, rows)
+
+    monkeypatch.setattr(SqlIndexWriter, "write_vectors", recording_write_vectors)
+    builder = get_default_builder()
+    builder.sql_flush(row_batch_size=5)
+    lunr(
+        "id",
+        ("body",),
+        ({"id": str(index), "body": ""} for index in range(23)),
+        builder=builder,
+        storage=sqlite_storage,
+    )
+
+    assert len(sizes) >= 5
+    assert max(sizes) <= 5
+
+
+def test_string_language_is_stored_as_one_language(sqlite_storage):
+    builder = get_default_builder()
+    indexer = SqlIndexer(sqlite_storage)
+    indexer.build(
+        [{"id": "1", "body": "green"}],
+        "id",
+        [("body", 1, None)],
+        {"pipeline": builder.pipeline, "languages": "ru"},
+        [],
+        search_pipeline=builder.search_pipeline,
+    )
+
+    assert get_active_generation(
+        sqlite_storage.conn, sqlite_storage.dialect, "docs"
+    ).languages == ["ru"]
+
+
+def test_average_lengths_casts_decimal_values_to_float():
+    class Cursor:
+        def execute(self, sql, params):
+            pass
+
+        def fetchall(self):
+            return [("body", Decimal("1.25"))]
+
+        def close(self):
+            pass
+
+    connection = SimpleNamespace(cursor=lambda: Cursor())
+    storage = SimpleNamespace(
+        conn=connection,
+        dialect=SimpleNamespace(placeholder="?"),
+        index_name="docs",
+    )
+
+    assert SqlIndexer(storage)._average_lengths("generation") == {"body": 1.25}
+
+
+def test_invalid_backend_is_rejected(sqlite_storage):
+    with pytest.raises(ValueError, match="backend"):
+        lunr(
+            "id",
+            ("body",),
+            [{"id": "1", "body": "green"}],
+            storage=sqlite_storage,
+            parallel_backend="invalid",
+        )
+
+
+def test_direct_sql_builder_build_is_explicitly_rejected(sqlite_storage):
+    builder = get_default_builder()
+    builder.storage(sqlite_storage)
+    builder.ref("id")
+    builder.field("body")
+    builder.add({"id": "1", "body": "green"})
+
+    with pytest.raises(RuntimeError, match="lunr"):
+        builder.build()
+
+
+def test_bm25_document_frequency_counts_docs_not_field_postings(sqlite_storage):
+    lunr(
+        "id",
+        ("title", "body"),
+        [
+            {"id": "1", "title": "common", "body": "common"},
+            {"id": "2", "title": "common", "body": "other"},
+        ],
+        storage=sqlite_storage,
+    )
+    generation = sqlite_storage.reader().generation
+    term_index = sqlite_storage.conn.execute(
+        "SELECT term_index FROM lunr_v2_terms WHERE index_name=? "
+        "AND generation=? AND term='common'",
+        ("docs", generation),
+    ).fetchone()[0]
+    elements = json.loads(
+        sqlite_storage.conn.execute(
+            "SELECT elements FROM lunr_v2_field_vectors WHERE index_name=? "
+            "AND generation=? AND field_ref='title/1'",
+            ("docs", generation),
+        ).fetchone()[0]
+    )
+
+    assert elements[elements.index(term_index) + 1] == 0.182

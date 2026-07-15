@@ -262,6 +262,11 @@ class Builder:
         This completes the indexing process and should only be called once all
         documents have been added to the index.
         """
+        if self._storage_backend is not None:
+            raise RuntimeError(
+                "Direct SQL-backed Builder.build() is no longer supported; "
+                "pass builder= and storage= to lunr() for streaming indexing"
+            )
         # Calculate average field lengths and construct field vectors in all
         # modes. These operations populate self.field_vectors and
         # self.field_lengths used by the scoring algorithm.
