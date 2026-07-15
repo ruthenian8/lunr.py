@@ -5,7 +5,7 @@ import pytest
 
 from lunr.storage.sql import SqlStorage
 from lunr.storage.sql.dialects import get_dialect
-from lunr.storage.sql.reader import SqlIndexReader as V2SqlIndexReader
+from lunr.storage.sql.reader import QueryData, SqlIndexReader as V2SqlIndexReader
 from lunr.storage.sql.schema import (
     activate_generation,
     begin_generation,
@@ -52,6 +52,7 @@ def populated_storage():
             ("100%real", 3),
             ("100_percent", 4),
             ("100xother", 5),
+            ("bang!value", 6),
         ]
     )
     writer.write_vectors(
@@ -101,6 +102,31 @@ def test_expand_terms_escapes_like_metacharacters(populated_storage):
 
     assert reader.expand_terms(["100%*"]) == ["100%real"]
     assert reader.expand_terms(["100_*"]) == ["100_percent"]
+    assert reader.expand_terms(["bang!*"]) == ["bang!value"]
+
+
+def test_wildcard_expansion_accepts_tuple_rows():
+    cursor = _NativeJsonCursor((("green", 0), ("growth", 1)))
+    storage = SimpleNamespace(
+        conn=_SingleCursorConnection(cursor),
+        index_name="docs",
+        dialect=get_dialect("sqlite"),
+    )
+
+    assert V2SqlIndexReader(storage, "generation").expand_terms("gr*") == [
+        "green",
+        "growth",
+    ]
+
+
+def test_query_data_loads_missing_vectors_incrementally(populated_storage):
+    query_data = QueryData(populated_storage.reader(), {}, {})
+
+    first = set(query_data.load_field_vectors(["title/1"]))
+    second = query_data.load_field_vectors(["title/1", "body/1"])
+
+    assert first == {"title/1"}
+    assert set(second) == {"title/1", "body/1"}
 
 
 def test_expand_terms_materializes_one_shot_pattern_iterable(populated_storage):

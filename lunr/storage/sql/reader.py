@@ -18,12 +18,13 @@ class QueryData:
     expanded_terms: dict
     postings: dict
     field_vectors: dict = field(default_factory=dict)
-    _vectors_loaded: bool = False
+    _loaded_field_refs: set = field(default_factory=set)
 
     def load_field_vectors(self, refs):
-        if not self._vectors_loaded:
-            self.field_vectors = self.reader.get_field_vectors(refs)
-            self._vectors_loaded = True
+        missing = set(refs) - self._loaded_field_refs
+        if missing:
+            self.field_vectors.update(self.reader.get_field_vectors(missing))
+            self._loaded_field_refs.update(missing)
         return self.field_vectors
 
 
@@ -89,10 +90,9 @@ class SqlIndexReader:
                     f"AND ({conditions})",
                     (self.index_name, self.generation, *escaped),
                 )
-                rows = cursor.fetchall()
+                rows = sorted(cursor.fetchall(), key=lambda row: row[1])
                 for term, term_index in rows:
                     indexes[term] = term_index
-                rows.sort(key=lambda row: row[1])
                 for pattern in chunk:
                     matcher = re.compile(
                         "^" + re.escape(pattern).replace(r"\*", ".*") + "$"

@@ -5,6 +5,7 @@ import pytest
 from lunr import lunr
 from lunr.exceptions import BaseLunrException
 from lunr.storage.sql import SqlStorage
+from lunr.stop_word_filter import stop_word_filter
 
 
 @pytest.fixture
@@ -68,3 +69,35 @@ def test_sql_query_does_not_mutate_clause_terms(indexes):
     sql_index.query(query)
 
     assert query.clauses[0].term == original
+
+
+def test_required_stop_word_returns_no_results(indexes):
+    sql_index, memory_index = indexes
+    sql_index.pipeline.add(stop_word_filter)
+    memory_index.pipeline.add(stop_word_filter)
+
+    assert sql_index.search("+the") == memory_index.search("+the") == []
+
+
+def test_equal_scores_are_sorted_by_reference():
+    documents = [
+        {"id": "z", "body": "identical"},
+        {"id": "a", "body": "identical"},
+    ]
+    connection = sqlite3.connect(":memory:")
+    storage = SqlStorage.from_conn(connection, "ties")
+    try:
+        sql_index = lunr("id", ("body",), iter(documents), storage=storage)
+        memory_index = lunr("id", ("body",), documents)
+
+        sql_results = sql_index.search("identical")
+        memory_results = memory_index.search("identical")
+
+        assert [result["ref"] for result in sql_results] == ["a", "z"]
+        assert [
+            (result["ref"], result["score"]) for result in sql_results
+        ] == [
+            (result["ref"], result["score"]) for result in memory_results
+        ]
+    finally:
+        connection.close()

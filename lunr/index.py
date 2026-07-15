@@ -177,6 +177,8 @@ class Index:
                 terms = self.pipeline.run_string(clause.term, {"fields": clause.fields})
             else:
                 terms = [clause.term]
+            if not terms and clause.presence == QueryPresence.REQUIRED:
+                return []
 
             clause_matches = set()
 
@@ -362,7 +364,7 @@ class Index:
                 matches[doc_ref] = match
                 results.append(match)
 
-        return sorted(results, key=lambda a: a["score"], reverse=True)
+        return sorted(results, key=lambda result: (-result["score"], result["ref"]))
 
     def _query_sql(self, query):
         if query.is_negated():
@@ -389,6 +391,8 @@ class Index:
                 )
             else:
                 terms = [clause.term]
+            if not terms and clause.presence == QueryPresence.REQUIRED:
+                return []
             processed_clauses.append((clause, terms))
             patterns.extend(terms)
 
@@ -481,7 +485,7 @@ class Index:
                 matches[field_ref.doc_ref] = match
                 results.append(match)
 
-        return sorted(results, key=lambda result: result["score"], reverse=True)
+        return sorted(results, key=lambda result: (-result["score"], result["ref"]))
 
     def serialize(self):
         """Returns a serialized index as a dict following lunr-schema."""
