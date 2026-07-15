@@ -7,7 +7,11 @@ from typing import Any, Dict, Iterable, Iterator
 
 from lunr import get_default_builder
 from lunr.index import Index
+from lunr.storage.sql.indexer import SqlIndexer
+from lunr.storage.sql.reader import SqlIndexReader
+from lunr.storage.sql.schema import ensure_schema, get_active_generation
 from lunr.storage.sql import SqlFieldVectorsProxy, SqlInvertedIndexProxy, SqlStorage
+from lunr.token_set import TokenSet
 
 
 def _dialect_name_from_engine(engine: Any) -> str:
@@ -43,34 +47,26 @@ def sql_lunr_index(
     try:
         dialect = _dialect_name_from_engine(db.engine)
         storage = SqlStorage.from_conn(conn, index_name=index_name, dialect=dialect)
-        storage.ensure_schema()
-        reader = storage.reader()
-
-        placeholder = storage.dialect.placeholder
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                f"SELECT DISTINCT field FROM lunr_postings WHERE index_name = {placeholder}",
-                (index_name,),
+        ensure_schema(conn, storage.dialect)
+        active = get_active_generation(conn, storage.dialect, index_name)
+        if active is None:
+            yield Index(
+                inverted_index={},
+                field_vectors={},
+                token_set=TokenSet(),
+                fields=[],
+                pipeline=get_default_builder(languages).search_pipeline,
             )
-            rows = cursor.fetchall()
-            if not rows:
-                cursor.execute(
-                    f"SELECT DISTINCT field FROM lunr_doc_fields WHERE index_name = {placeholder}",
-                    (index_name,),
-                )
-                rows = cursor.fetchall()
+            return
 
-            fields = [row[0] for row in rows]
-        finally:
-            cursor.close()
+        reader = SqlIndexReader(storage, active.generation)
 
         idx = Index(
             inverted_index=SqlInvertedIndexProxy(reader),
             field_vectors=SqlFieldVectorsProxy(reader),
             token_set=None,
-            fields=fields,
-            pipeline=get_default_builder(languages).search_pipeline,
+            fields=active.fields,
+            pipeline=get_default_builder(active.languages or None).search_pipeline,
             storage_reader=reader,
         )
         yield idx
@@ -118,53 +114,38 @@ def build_or_rebuild_index(
     try:
         dialect = _dialect_name_from_engine(db.engine)
         storage = SqlStorage.from_conn(conn, index_name=index_name, dialect=dialect)
-        storage.ensure_schema()
-        placeholder = storage.dialect.placeholder
-
-        cursor = conn.cursor()
-        try:
-            for table in (
-                "lunr_terms",
-                "lunr_postings",
-                "lunr_field_vectors",
-                "lunr_doc_fields",
-                "lunr_term_frequencies",
-            ):
-                cursor.execute(
-                    f"DELETE FROM {table} WHERE index_name = {placeholder}",
-                    (index_name,),
-                )
-            conn.commit()
-        finally:
-            cursor.close()
-
         builder = get_default_builder(languages)
-        builder.ref(ref_field)
-        for field in fields:
-            builder.field(field)
-        if metadata_whitelist:
-            builder.metadata_whitelist.extend(metadata_whitelist)
-        builder.storage(storage)
-
-        builder.sql_flush(
-            enabled=True,
-            doc_batch_size=doc_batch_size,
-            row_batch_size=row_batch_size,
+        SqlIndexer(storage).build(
+            documents,
+            ref_field,
+            [(field, 1, None) for field in fields],
+            {"languages": languages},
+            list(metadata_whitelist or ()),
+            workers=workers,
+            backend=parallel_backend or "process",
+            batch_sizes={"rows": row_batch_size},
+            search_pipeline=builder.search_pipeline,
         )
-        builder.sql_commit_every(docs=commit_docs)
-
-        if workers and workers > 1:
-            builder.parallel(workers=workers, backend=parallel_backend or "thread")
-
-        for doc in documents:
-            builder.add(doc)
-
-        builder.build()
     finally:
         conn.close()
 
 
-def create_app(languages: "str | list[str] | None" = None) -> "flask.Flask":  # type: ignore[name-defined]
+def serialize_search_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert one Lunr result into a value accepted by Flask's JSON encoder."""
+    match_data = result.get("match_data")
+    return {
+        "ref": result["ref"],
+        "score": result["score"],
+        "match_data": match_data.metadata if match_data is not None else {},
+    }
+
+
+def create_app(
+    languages: "str | list[str] | None" = None,
+    *,
+    database_uri: str = "sqlite:///app.db",
+    doc_batch_size: int = 500,
+) -> "flask.Flask":  # type: ignore[name-defined]
     """Create a minimal Flask app exposing ``/search`` and ``/reindex`` endpoints.
 
     Args:
@@ -177,7 +158,7 @@ def create_app(languages: "str | list[str] | None" = None) -> "flask.Flask":  # 
     from flask_sqlalchemy import SQLAlchemy  # type: ignore
 
     app = Flask(__name__)
-    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///app.db"
+    app.config["SQLALCHEMY_DATABASE_URI"] = database_uri
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     db = SQLAlchemy(app)
 
@@ -200,23 +181,28 @@ def create_app(languages: "str | list[str] | None" = None) -> "flask.Flask":  # 
         with sql_lunr_index(db, index_name, languages=languages) as idx:
             results = idx.search(query)
 
-        return jsonify(results[:20])
+        return jsonify([serialize_search_result(result) for result in results[:20]])
 
     @app.post("/reindex")
     def reindex():  # type: ignore[no-redef]
         """Repopulate the search index from the ``Document`` model."""
-        docs = [
-            {"id": str(doc.id), "title": doc.title, "body": doc.body}
-            for doc in Document.query.all()
-        ]
+        indexed = 0
+
+        def documents():
+            nonlocal indexed
+            for doc in Document.query.yield_per(doc_batch_size):
+                indexed += 1
+                yield {"id": str(doc.id), "title": doc.title, "body": doc.body}
+
         build_or_rebuild_index(
             db,
             index_name,
-            docs,
+            documents(),
+            doc_batch_size=doc_batch_size,
             ref_field="id",
             text_fields=["title", "body"],
             languages=languages,
         )
-        return jsonify({"status": "ok", "indexed": len(docs)})
+        return jsonify({"status": "ok", "indexed": indexed})
 
     return app
