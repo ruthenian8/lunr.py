@@ -50,3 +50,52 @@ jobs:
         with:
           fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  sql-backends:
+    name: "PostgreSQL 16 and MySQL 8"
+    runs-on: "ubuntu-latest"
+    services:
+      postgresql:
+        image: postgres:16
+        env:
+          POSTGRES_USER: lunr
+          POSTGRES_PASSWORD: lunr
+          POSTGRES_DB: lunr
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lunr -d lunr"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_DATABASE: lunr
+          MYSQL_USER: lunr
+          MYSQL_PASSWORD: lunr
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -ulunr -plunr"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      LUNR_TEST_POSTGRESQL_URL: postgresql://lunr:lunr@127.0.0.1:5432/lunr
+      LUNR_TEST_MYSQL_URL: mysql://lunr:lunr@127.0.0.1:3306/lunr
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: "Install SQL test dependencies"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[tests,sql]"
+      - name: "Run live SQL backend contracts"
+        run: >-
+          pytest -q
+          tests/storage/test_sql_postgresql.py
+          tests/storage/test_sql_mysql.py

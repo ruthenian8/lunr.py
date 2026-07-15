@@ -160,28 +160,42 @@ We can now search the index as usual:
  {'ref': 'c', 'score': 0.13, 'match_data': <MatchData "plumb">}]
 ```
 
-## SQL-backed parallel and incremental indexing
+## SQL-backed indexes
 
-For SQL-backed indexes you can enable parallel document processing and
-bounded-memory flushing.
+Install `lunr[sql]` for Flask, PostgreSQL, and MySQL support together, or use the
+`postgresql`, `mysql`, and `flask` extras separately. SQLite requires no extra.
+
+SQL indexes use `lunr_v2_*` tables and atomic generations. Documents are staged
+in a new invisible generation; activation is one transaction, so a failed
+rebuild preserves the previous searchable generation. Unversioned V1 tables are
+not migrated and must be rebuilt from source documents.
 
 ```python
-from lunr import get_default_builder
+from lunr import lunr
 from lunr.storage.sql import SqlStorage
 
-builder = get_default_builder()
-builder.ref("id")
-builder.field("title")
-builder.field("body")
-builder.storage(SqlStorage.from_url("sqlite:///:memory:", index_name="idx"))
-builder.parallel(workers=4, backend="process")
-builder.sql_flush(enabled=True, doc_batch_size=500, row_batch_size=5000)
-builder.sql_commit_every(docs=2000)
+storage = SqlStorage.from_url("sqlite:///search.db", index_name="idx")
+index = lunr(
+    "id",
+    ("title", "body"),
+    documents,
+    storage=storage,
+    workers=4,
+    parallel_backend="process",
+)
 ```
 
-Notes:
-- `backend="process"` requires picklable payloads (documents/extractors/pipeline).
-  If not picklable, Lunr falls back to `thread` and emits a `RuntimeWarning`.
-- Incremental flushing reduces peak RAM by writing postings and term frequencies
-  in chunks before vector finalization.
-- Leading wildcard queries (`*term`) can still be expensive on large SQL tables.
+SQLite URL forms are `sqlite:///:memory:`, `sqlite:///relative.db`, and
+`sqlite:////absolute/path/search.db`. Normal PostgreSQL and MySQL URLs are also
+supported.
+
+SQL builds stream input and batch staging rows, but vocabulary, vector
+finalization state, and database staging rows still scale with the corpus.
+`Builder.sql_flush(row_batch_size=...)` only controls row batches; its old
+document batching arguments and `sql_commit_every` are deprecated because
+committing an incomplete generation would violate atomic rebuild semantics.
+
+Readers remain pinned to their generation across a rebuild. Inactive
+generations are therefore never removed automatically. Once the application
+has closed all old readers, call `storage.prune_inactive_generations()` to
+reclaim them. Calling it while pinned readers exist invalidates those readers.

@@ -48,26 +48,15 @@ def lunr(
     Returns:
         Index: The populated Index ready to search against.
     """
-    builder = builder or get_default_builder(languages)
-    if storage is not None:
-        builder.storage(storage)
+    normalized_languages = lang.normalize_languages(languages)
+    custom_builder = builder is not None
+    builder = builder or get_default_builder(normalized_languages or None)
+    storage = storage or builder._storage_backend
+    if storage is not None and parallel_backend not in {"process", "thread"}:
+        raise ValueError("backend must be either 'process' or 'thread'")
     if df_threshold is not None:
         builder.df_threshold(df_threshold)
-    if workers is not None and storage is not None:
-        try:
-            if (
-                int(workers) > 1
-                and parallel_backend == "process"
-                and len(documents) < 200
-            ):
-                warnings.warn(
-                    "workers>1 on small corpora may be slower due to parallel overhead.",
-                    RuntimeWarning,
-                )
-        except TypeError:
-            pass
-        builder.parallel(workers=workers, backend=parallel_backend)
-    elif workers is not None:
+    if workers is not None and storage is None:
         try:
             if int(workers) > 1:
                 warnings.warn(
@@ -83,6 +72,37 @@ def lunr(
         else:
             builder.field(field)
 
+    if storage is not None:
+        from lunr.storage.sql.indexer import SqlIndexer
+
+        configured_fields = [
+            (name, field.boost, field.extractor)
+            for name, field in builder._fields.items()
+        ]
+        pipeline_config = (
+            {"pipeline": builder.pipeline, "languages": normalized_languages}
+            if custom_builder
+            else {"languages": normalized_languages}
+        )
+        effective_workers = (
+            workers if workers is not None else builder._parallel_workers
+        )
+        effective_backend = (
+            parallel_backend if workers is not None else builder._parallel_backend
+        )
+        return SqlIndexer(storage, b=builder._b, k1=builder._k1).build(
+            documents,
+            ref,
+            configured_fields,
+            pipeline_config,
+            list(builder.metadata_whitelist),
+            workers=effective_workers,
+            backend=effective_backend,
+            batch_sizes={"rows": builder._sql_row_batch_size},
+            df_threshold=builder._df_threshold,
+            search_pipeline=builder.search_pipeline,
+        )
+
     for document in documents:
         if isinstance(document, (tuple, list)):
             builder.add(document[0], attributes=document[1])
@@ -97,10 +117,8 @@ def get_default_builder(languages=None):
 
     Useful as a starting point to tweak the defaults.
     """
-    if languages is not None:
-        if isinstance(languages, str):
-            languages = [languages]
-
+    languages = lang.normalize_languages(languages)
+    if languages:
         requested_languages = set(languages)
         nltk_independent_languages = {"ru"}
 

@@ -179,7 +179,7 @@ As opposed to the default:
 
 Note presence can also be combined with any of the other modifiers described above.
 
-## SQL indexing knobs
+## SQL query and indexing behavior
 
 The top-level `lunr(...)` API exposes SQL parallel configuration:
 
@@ -194,10 +194,25 @@ idx = lunr(
 )
 ```
 
-For larger corpora, use a builder directly to enable incremental SQL flushing
-and commit cadence tuning:
+Exact SQL queries batch term, posting, and vector reads, so round trips are
+bounded rather than growing once per matched term or document. Wildcard clauses
+require expansion queries, and a leading wildcard such as `*plant` can scan a
+large vocabulary table.
+
+SQL mode intentionally rejects prohibited clauses, fully negated queries,
+fuzzy/edit-distance expansion, and serialization. Exact terms, required and
+optional positive clauses, field restrictions, boosts, and `*` wildcards are
+supported.
+
+Row batch size can be tuned with a builder:
 
 ```python
-builder.sql_flush(enabled=True, doc_batch_size=500, row_batch_size=5000)
-builder.sql_commit_every(docs=2000, rows=50000)
+builder.sql_flush(row_batch_size=5000)
 ```
+
+SQL builds always stream. The former document-batch and commit-cadence options
+are deprecated no-ops because V2 generations are committed atomically.
+
+The Flask integration's rebuild route is an example, not an access-control
+layer. Production reindex endpoints must require application-specific
+authentication and authorization.

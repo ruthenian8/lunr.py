@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Add first-class generation-based SQL storage for SQLite, PostgreSQL, and
+  MySQL, with streaming builds, atomic activation, pinned readers, and bounded
+  search reads.
+- Add stored language metadata, Russian morphology support across process
+  workers and fresh SQL facades, and optional Flask integration.
+- Add `SqlStorage.prune_inactive_generations()` for explicit safe cleanup after
+  all pinned readers have closed.
+- V1 SQL indexes using unversioned `lunr_*` tables are incompatible and require
+  rebuilding from source documents; they are not migrated automatically.
+- Deprecate ignored SQL document-batch and commit-cadence Builder controls.
+
 ## 0.8.0 (2025-03-08)
 
 - Drop support for Python 3.7 and 3.8

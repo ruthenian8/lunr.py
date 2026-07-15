@@ -39,6 +39,15 @@ except ImportError:  # pragma: no cover
     LANGUAGE_SUPPORT = False
 
 
+def normalize_languages(languages):
+    """Return language codes as a de-duplicated list in caller order."""
+    if languages is None:
+        return []
+    if isinstance(languages, str):
+        languages = [languages]
+    return list(dict.fromkeys(languages))
+
+
 def _get_stopwords_and_word_characters(language):
     nltk.download("stopwords", quiet=True)
     verbose_language = SUPPORTED_LANGUAGES[language]

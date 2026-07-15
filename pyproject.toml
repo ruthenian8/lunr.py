@@ -39,6 +39,10 @@ Changelog = "https://github.com/yeraydiazdiaz/lunr.py/blob/master/CHANGELOG.md"
 
 
 [project.optional-dependencies]
+flask = ["Flask", "Flask-SQLAlchemy"]
+postgresql = ["psycopg[binary]>=3"]
+mysql = ["PyMySQL>=1"]
+sql = ["lunr[flask,postgresql,mysql]"]
 languages = [
     "nltk"
 ]

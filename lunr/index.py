@@ -118,6 +118,10 @@ class Index:
             callback (callable): An optional function taking a single Query
                 object result of `create_query` for further configuration.
         """
+        if callback is None and callable(query):
+            callback = query
+            query = None
+
         if query is None:
             query = self.create_query()
 
@@ -132,6 +136,9 @@ class Index:
                 "passing it as the `query` argument."
             )
             return []
+
+        if self.storage_reader is not None:
+            return self._query_sql(query)
 
         # for each query clause
         # * process terms
@@ -170,6 +177,8 @@ class Index:
                 terms = self.pipeline.run_string(clause.term, {"fields": clause.fields})
             else:
                 terms = [clause.term]
+            if not terms and clause.presence == QueryPresence.REQUIRED:
+                return []
 
             clause_matches = set()
 
@@ -355,7 +364,128 @@ class Index:
                 matches[doc_ref] = match
                 results.append(match)
 
-        return sorted(results, key=lambda a: a["score"], reverse=True)
+        return sorted(results, key=lambda result: (-result["score"], result["ref"]))
+
+    def _query_sql(self, query):
+        if query.is_negated():
+            raise BaseLunrException(
+                "Negated queries are not supported for SQL-backed indexes"
+            )
+        for clause in query.clauses:
+            if clause.presence == QueryPresence.PROHIBITED:
+                raise BaseLunrException(
+                    "Prohibited clauses are not supported for SQL-backed indexes"
+                )
+            if clause.edit_distance and clause.edit_distance > 0:
+                raise BaseLunrException(
+                    "Edit distance (fuzzy) searches are not supported for "
+                    "SQL-backed indexes"
+                )
+
+        processed_clauses = []
+        patterns = []
+        for clause in query.clauses:
+            if clause.use_pipeline:
+                terms = self.pipeline.run_string(
+                    clause.term, {"fields": clause.fields}
+                )
+            else:
+                terms = [clause.term]
+            if not terms and clause.presence == QueryPresence.REQUIRED:
+                return []
+            processed_clauses.append((clause, terms))
+            patterns.extend(terms)
+
+        query_data = self.storage_reader.prepare_query(patterns)
+        matching_fields = {}
+        query_vectors = {field: Vector() for field in self.fields}
+        term_field_cache = set()
+        required_matches = {}
+
+        for clause, terms in processed_clauses:
+            clause_matches = set()
+            for term in terms:
+                expanded_terms = query_data.expanded_terms.get(term, [])
+                if not expanded_terms and clause.presence == QueryPresence.REQUIRED:
+                    for field in clause.fields:
+                        required_matches[field] = CompleteSet()
+                    break
+
+                for expanded_term in expanded_terms:
+                    posting = query_data.postings[expanded_term]
+                    term_index = posting["_index"]
+                    for field in clause.fields:
+                        field_posting = posting.get(field, {})
+                        matching_document_refs = field_posting.keys()
+                        matching_documents_set = set(matching_document_refs)
+                        term_field = expanded_term + "/" + field
+
+                        if clause.presence == QueryPresence.REQUIRED:
+                            clause_matches.update(matching_documents_set)
+                            if field not in required_matches:
+                                required_matches[field] = CompleteSet()
+
+                        query_vectors[field].upsert(
+                            term_index, clause.boost, lambda a, b: a + b
+                        )
+                        if term_field in term_field_cache:
+                            continue
+
+                        for matching_document_ref in matching_document_refs:
+                            matching_field_ref = str(
+                                FieldRef(matching_document_ref, field)
+                            )
+                            metadata = field_posting[str(matching_document_ref)]
+                            if matching_field_ref not in matching_fields:
+                                matching_fields[matching_field_ref] = MatchData(
+                                    expanded_term, field, metadata
+                                )
+                            else:
+                                matching_fields[matching_field_ref].add(
+                                    expanded_term, field, metadata
+                                )
+                        term_field_cache.add(term_field)
+
+            if clause.presence == QueryPresence.REQUIRED:
+                for field in clause.fields:
+                    required_matches[field] = required_matches[field].intersection(
+                        clause_matches
+                    )
+
+        all_required_matches = CompleteSet()
+        for field in self.fields:
+            if field in required_matches:
+                all_required_matches = all_required_matches.intersection(
+                    required_matches[field]
+                )
+
+        matching_field_refs = [
+            field_ref
+            for field_ref in matching_fields
+            if FieldRef.from_string(field_ref).doc_ref in all_required_matches
+        ]
+        field_vectors = query_data.load_field_vectors(matching_field_refs)
+        results = []
+        matches = {}
+        for matching_field_ref in matching_field_refs:
+            field_ref = FieldRef.from_string(matching_field_ref)
+            score = query_vectors[field_ref.field_name].similarity(
+                field_vectors[matching_field_ref]
+            )
+            if field_ref.doc_ref in matches:
+                match = matches[field_ref.doc_ref]
+                match["score"] += score
+                match["match_data"].combine(matching_fields[matching_field_ref])
+            else:
+                match = {
+                    "ref": field_ref.doc_ref,
+                    "score": score,
+                    "match_data": matching_fields[matching_field_ref],
+                }
+                matches[field_ref.doc_ref] = match
+                results.append(match)
+
+        return sorted(results, key=lambda result: (-result["score"], result["ref"]))
 
     def serialize(self):
         """Returns a serialized index as a dict following lunr-schema."""

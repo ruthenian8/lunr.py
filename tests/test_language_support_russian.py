@@ -1,9 +1,13 @@
+import sqlite3
 import sys
 
 import pytest
 
 from lunr import get_default_builder, lunr
+from lunr import languages as language_support
+from lunr.exceptions import BaseLunrException
 from lunr.languages import ru
+from lunr.storage.sql import SqlStorage
 
 
 try:
@@ -11,6 +15,63 @@ try:
     HAS_PYMORPHY3 = True
 except (RuntimeError, AttributeError):
     HAS_PYMORPHY3 = False
+
+
+@pytest.fixture
+def sqlite_storage():
+    connection = sqlite3.connect(":memory:")
+    try:
+        yield SqlStorage.from_conn(connection, "russian")
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, []),
+        ("ru", ["ru"]),
+        (("ru", "en", "ru"), ["ru", "en"]),
+    ],
+)
+def test_normalize_languages_returns_canonical_ordered_list(raw, expected):
+    assert language_support.normalize_languages(raw) == expected
+
+
+def test_reopen_rejects_conflicting_languages(sqlite_storage):
+    lunr(
+        "id",
+        ("body",),
+        [{"id": "1", "body": "green"}],
+        storage=sqlite_storage,
+    )
+
+    with pytest.raises(BaseLunrException, match="languages"):
+        sqlite_storage.open_index(languages=["ru"])
+
+
+@pytest.mark.skipif(not HAS_PYMORPHY3, reason="pymorphy3 is not installed")
+def test_sql_reopen_uses_stored_russian_pipeline(sqlite_storage):
+    documents = [
+        {
+            "id": "1",
+            "title": "В статье говорится о машине",
+            "body": "Он читает книгу",
+        }
+    ]
+    lunr(
+        "id",
+        ("title", "body"),
+        documents,
+        languages="ru",
+        storage=sqlite_storage,
+    )
+    fresh = SqlStorage.from_conn(sqlite_storage.conn, "russian")
+
+    reopened = fresh.open_index()
+
+    for query in ("машина", "машины", "машиной", "читать", "читала"):
+        assert [result["ref"] for result in reopened.search(query)] == ["1"]
 
 
 @pytest.mark.parametrize(
