@@ -11,6 +11,22 @@ class SqlIndexWriter:
         self.index_name = storage.index_name
         self.dialect = storage.dialect
         self.generation = generation
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT state FROM lunr_v2_generations "
+                f"WHERE index_name={self.dialect.placeholder} "
+                f"AND generation={self.dialect.placeholder}",
+                (self.index_name, self.generation),
+            )
+            row = cursor.fetchone()
+        finally:
+            cursor.close()
+        if row is None or row[0] != "building":
+            raise ValueError(
+                f"{generation!r} is not a building generation for "
+                f"index {self.index_name!r}"
+            )
 
     def _upsert_many(self, table, columns, keys, rows) -> None:
         if not rows:

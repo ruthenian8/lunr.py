@@ -28,6 +28,8 @@ class SqlIndexReader:
     def expand_terms(self, patterns) -> list[str]:
         if isinstance(patterns, str):
             patterns = [patterns]
+        else:
+            patterns = list(patterns)
         exact = [pattern for pattern in patterns if "*" not in pattern]
         wildcard = [pattern for pattern in patterns if "*" in pattern]
         matches = {}

@@ -21,7 +21,6 @@ class SqlStorage:
         self.dialect = get_dialect(dialect) if isinstance(dialect, str) else dialect
         self.owns_connection = owns_connection
         self._legacy_write_requested = False
-        self._v2_generation = None
 
     @classmethod
     def from_url(cls, url: str, index_name: str) -> "SqlStorage":
@@ -36,20 +35,19 @@ class SqlStorage:
 
     def writer(self, generation=None):
         if generation is not None:
-            self._v2_generation = generation
-            return V2SqlIndexWriter(self, generation)
+            writer = V2SqlIndexWriter(self, generation)
+            self._legacy_write_requested = False
+            return writer
         self._legacy_write_requested = True
         return SqlIndexWriter(self)
 
     def reader(self):
         if self._legacy_write_requested:
             return SqlIndexReader(self)
-        if self._v2_generation is None:
-            active = get_active_generation(self.conn, self.dialect, self.index_name)
-            if active is None:
-                raise ValueError(f"No active SQL index named {self.index_name!r}")
-            self._v2_generation = active.generation
-        return V2SqlIndexReader(self, self._v2_generation)
+        active = get_active_generation(self.conn, self.dialect, self.index_name)
+        if active is None:
+            raise ValueError(f"No active SQL index named {self.index_name!r}")
+        return V2SqlIndexReader(self, active.generation)
 
     def close(self) -> None:
         if self.owns_connection:
